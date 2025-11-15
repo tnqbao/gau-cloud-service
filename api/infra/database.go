@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/tnqbao/gau-cloud-orchestrator/api/config"
+	"github.com/tnqbao/gau-cloud-orchestrator/config"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
