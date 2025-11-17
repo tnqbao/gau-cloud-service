@@ -45,4 +45,4 @@ spec:
       volumes:
         - name: localstack-data
           persistentVolumeClaim:
-            claimName: gau-localstack-${DEPLOY_ENV}-pvc
+            claimName: gau-localstack-pvc
