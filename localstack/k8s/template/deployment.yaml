@@ -35,8 +35,6 @@ spec:
           volumeMounts:
             - name: localstack-data
               mountPath: /var/lib/localstack/data
-            - name: docker-sock
-              mountPath: /var/run/docker.sock
           resources:
             requests:
               cpu: "100m"
@@ -47,8 +45,4 @@ spec:
       volumes:
         - name: localstack-data
           persistentVolumeClaim:
-            claimName: gau-localstack-pvc
-        - name: docker-sock
-          hostPath:
-            path: /var/run/docker.sock
-            type: Socket
+            claimName: gau-localstack-${DEPLOY_ENV}-pvc
