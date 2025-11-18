@@ -27,6 +27,9 @@ spec:
             - name: ext-services
               containerPort: 4571
               protocol: TCP
+          env:
+            - name: LOCALSTACK_PLUGIN_PATH
+              value: /opt/localstack/plugins
           envFrom:
             - configMapRef:
                 name: gau-localstack-${DEPLOY_ENV}-config
@@ -35,6 +38,8 @@ spec:
           volumeMounts:
             - name: localstack-data
               mountPath: /var/lib/localstack/data
+            - name: localstack-plugins
+              mountPath: /opt/localstack/plugins
           resources:
             requests:
               cpu: "100m"
@@ -46,3 +51,6 @@ spec:
         - name: localstack-data
           persistentVolumeClaim:
             claimName: gau-localstack-pvc
+        - name: localstack-plugins
+          configMap:
+            name: localstack-plugins-cm

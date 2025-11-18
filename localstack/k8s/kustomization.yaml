@@ -7,3 +7,4 @@ resources:
   - ./base/service.yaml
   - ./base/pvc.yaml
   - ./base/ingress.yaml
+  - ./base/plugin-configmap.yaml
