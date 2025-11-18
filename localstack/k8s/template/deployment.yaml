@@ -40,6 +40,7 @@ spec:
           volumeMounts:
             - name: localstack-data
               mountPath: /var/lib/localstack
+              subPath: data
 #            - name: localstack-plugins
 #              mountPath: /opt/localstack/plugins
           resources:
