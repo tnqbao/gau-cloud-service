@@ -38,8 +38,8 @@ spec:
           volumeMounts:
             - name: localstack-data
               mountPath: /var/lib/localstack/data
-            - name: localstack-plugins
-              mountPath: /opt/localstack/plugins
+#            - name: localstack-plugins
+#              mountPath: /opt/localstack/plugins
           resources:
             requests:
               cpu: "100m"
@@ -51,6 +51,6 @@ spec:
         - name: localstack-data
           persistentVolumeClaim:
             claimName: gau-localstack-pvc
-        - name: localstack-plugins
-          configMap:
-            name: localstack-plugins-cm
+#        - name: localstack-plugins
+#          configMap:
+#            name: localstack-plugins-cm
