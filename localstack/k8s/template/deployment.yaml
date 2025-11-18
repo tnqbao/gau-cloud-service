@@ -61,11 +61,11 @@ spec:
           command: ['sh', '-c']
           args:
             - |
-              mkdir -p /hooks/ready.d /hooks/shutdown.d
+              mkdir -p /hooks/ready.d
               cp /tmp/hooks/ready.d_01_restore.sh /hooks/ready.d/01_restore.sh
-              cp /tmp/hooks/shutdown_01_backup.sh /hooks/shutdown.d/01_backup.sh
+              cp /tmp/hooks/ready.d_02_start_backup_cron.sh /hooks/ready.d/02_start_backup_cron.sh
               chmod +x /hooks/ready.d/01_restore.sh
-              chmod +x /hooks/shutdown.d/01_backup.sh
+              chmod +x /hooks/ready.d/02_start_backup_cron.sh
           volumeMounts:
             - name: init-hooks-source
               mountPath: /tmp/hooks

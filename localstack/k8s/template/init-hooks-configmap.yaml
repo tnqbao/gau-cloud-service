@@ -23,8 +23,10 @@ data:
         
         # Read and restore buckets
         cat "$BACKUP_FILE" | jq -r '.buckets[]' | while read bucket; do
-            echo "Restoring bucket: $bucket"
-            awslocal s3 mb "s3://$bucket" 2>/dev/null || echo "Bucket $bucket already exists"
+            if [ ! -z "$bucket" ]; then
+                echo "Restoring bucket: $bucket"
+                awslocal s3 mb "s3://$bucket" 2>/dev/null || echo "Bucket $bucket already exists"
+            fi
         done
         
         echo "S3 restore completed!"
@@ -32,18 +34,49 @@ data:
         echo "No backup file found, starting fresh."
     fi
 
-  shutdown_01_backup.sh: |
+  ready.d_02_start_backup_cron.sh: |
     #!/bin/bash
-    echo "=== LocalStack Shutdown: Backing up S3 state ==="
-    BACKUP_FILE="/var/lib/localstack/data/s3-backup.json"
+    echo "=== Starting periodic S3 backup ==="
     
-    # Create backup directory
+    # Create backup script
+    cat > /tmp/backup_s3.sh << 'EOF'
+    #!/bin/bash
+    BACKUP_FILE="/var/lib/localstack/data/s3-backup.json"
+    BACKUP_FILE_TMP="/var/lib/localstack/data/s3-backup.json.tmp"
+    
     mkdir -p /var/lib/localstack/data
     
-    # Get all buckets and save to JSON
-    BUCKETS=$(awslocal s3 ls | awk '{print $3}' | jq -R -s -c 'split("\n") | map(select(length > 0))')
-    echo "{\"buckets\": $BUCKETS}" > "$BACKUP_FILE"
+    # Get all buckets and save to temporary file
+    BUCKETS=$(awslocal s3 ls 2>/dev/null | awk '{print $3}' | jq -R -s -c 'split("\n") | map(select(length > 0))')
     
-    echo "Backup saved to $BACKUP_FILE"
-    cat "$BACKUP_FILE"
-
+    if [ ! -z "$BUCKETS" ] && [ "$BUCKETS" != "[]" ]; then
+        # Write to temporary file first
+        echo "{\"buckets\": $BUCKETS, \"timestamp\": \"$(date -Iseconds)\"}" > "$BACKUP_FILE_TMP"
+        
+        # Remove old backup file
+        rm -f "$BACKUP_FILE"
+        
+        # Rename temporary file to final backup file
+        mv "$BACKUP_FILE_TMP" "$BACKUP_FILE"
+        
+        echo "[$(date)] Backup saved: $BACKUP_FILE"
+    else
+        echo "[$(date)] No buckets found, skipping backup"
+    fi
+    EOF
+    
+    chmod +x /tmp/backup_s3.sh
+    
+    # Run initial backup after 30 seconds
+    (sleep 30 && /tmp/backup_s3.sh) &
+    
+    # Run backup every 2 minutes in background
+    (
+        sleep 150  # Wait 2.5 minutes before starting loop (30s initial + 120s)
+        while true; do
+            /tmp/backup_s3.sh
+            sleep 120
+        done
+    ) &
+    
+    echo "Backup cron started (initial backup in 30s, then every 2 minutes)"
