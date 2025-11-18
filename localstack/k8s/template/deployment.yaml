@@ -40,7 +40,12 @@ spec:
           volumeMounts:
             - name: localstack-data
               mountPath: /var/lib/localstack
-              subPath: data
+            - name: init-hooks
+              mountPath: /etc/localstack/init/ready.d
+              subPath: ready.d
+            - name: init-hooks
+              mountPath: /etc/localstack/init/shutdown.d
+              subPath: shutdown.d
 #            - name: localstack-plugins
 #              mountPath: /opt/localstack/plugins
           resources:
@@ -50,10 +55,31 @@ spec:
             limits:
               cpu: "500m"
               memory: "1Gi"
+      initContainers:
+        - name: setup-hooks
+          image: busybox:latest
+          command: ['sh', '-c']
+          args:
+            - |
+              mkdir -p /hooks/ready.d /hooks/shutdown.d
+              cp /tmp/hooks/ready.d_01_restore.sh /hooks/ready.d/01_restore.sh
+              cp /tmp/hooks/shutdown_01_backup.sh /hooks/shutdown.d/01_backup.sh
+              chmod +x /hooks/ready.d/01_restore.sh
+              chmod +x /hooks/shutdown.d/01_backup.sh
+          volumeMounts:
+            - name: init-hooks-source
+              mountPath: /tmp/hooks
+            - name: init-hooks
+              mountPath: /hooks
       volumes:
         - name: localstack-data
           persistentVolumeClaim:
             claimName: gau-localstack-pvc
+        - name: init-hooks-source
+          configMap:
+            name: gau-localstack-init-hooks
+        - name: init-hooks
+          emptyDir: {}
 #        - name: localstack-plugins
 #          configMap:
 #            name: localstack-plugins-cm

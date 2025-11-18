@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gau-localstack-init-hooks
+  namespace: bao-${DEPLOY_ENV}-env
+  labels:
+    app: bao-platform
+    env: ${DEPLOY_ENV}
+data:
+  ready.d_01_restore.sh: |
+    #!/bin/bash
+    echo "=== LocalStack Init: Restoring S3 state ==="
+    BACKUP_FILE="/var/lib/localstack/data/s3-backup.json"
+    
+    if [ -f "$BACKUP_FILE" ]; then
+        echo "Found backup file, restoring S3 buckets..."
+        
+        # Wait for S3 to be ready
+        until awslocal s3 ls > /dev/null 2>&1; do
+            echo "Waiting for S3 service..."
+            sleep 2
+        done
+        
+        # Read and restore buckets
+        cat "$BACKUP_FILE" | jq -r '.buckets[]' | while read bucket; do
+            echo "Restoring bucket: $bucket"
+            awslocal s3 mb "s3://$bucket" 2>/dev/null || echo "Bucket $bucket already exists"
+        done
+        
+        echo "S3 restore completed!"
+    else
+        echo "No backup file found, starting fresh."
+    fi
+
+  shutdown_01_backup.sh: |
+    #!/bin/bash
+    echo "=== LocalStack Shutdown: Backing up S3 state ==="
+    BACKUP_FILE="/var/lib/localstack/data/s3-backup.json"
+    
+    # Create backup directory
+    mkdir -p /var/lib/localstack/data
+    
+    # Get all buckets and save to JSON
+    BUCKETS=$(awslocal s3 ls | awk '{print $3}' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+    echo "{\"buckets\": $BUCKETS}" > "$BACKUP_FILE"
+    
+    echo "Backup saved to $BACKUP_FILE"
+    cat "$BACKUP_FILE"
+
