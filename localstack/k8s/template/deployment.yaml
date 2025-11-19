@@ -38,8 +38,6 @@ spec:
             - secretRef:
                 name: gau-localstack-${DEPLOY_ENV}-secret
           volumeMounts:
-            - name: localstack-data
-              mountPath: /var/lib/localstack
             - name: init-hooks
               mountPath: /etc/localstack/init/ready.d
               subPath: ready.d
@@ -72,9 +70,6 @@ spec:
             - name: init-hooks
               mountPath: /hooks
       volumes:
-        - name: localstack-data
-          persistentVolumeClaim:
-            claimName: gau-localstack-pvc
         - name: init-hooks-source
           configMap:
             name: gau-localstack-init-hooks
