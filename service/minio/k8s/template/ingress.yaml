@@ -7,11 +7,8 @@ metadata:
     app: bao-platform
     env: ${DEPLOY_ENV}
   annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: "0"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    traefik.ingress.kubernetes.io/router.entrypoints: web
 spec:
-  ingressClassName: nginx
   rules:
     - host: "${API_DOMAIN}"
       http:
