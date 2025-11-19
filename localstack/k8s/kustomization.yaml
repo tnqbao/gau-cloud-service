@@ -5,5 +5,6 @@ resources:
   - ./base/configmap.yaml
   - ./base/deployment.yaml
   - ./base/service.yaml
-  - ./base/pvc.yaml
   - ./base/ingress.yaml
+  - ./base/plugin-configmap.yaml
+  - ./base/init-hooks-configmap.yaml
