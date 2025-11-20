@@ -1,4 +1,4 @@
-FROM golang:1.25-alpine AS builder
+FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
@@ -9,9 +9,8 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build both services
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o http-service ./main.go
-RUN #CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o consumer-service ./consumer/main.go
+# Build the service
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o gau-cloud-service ./main.go
 
 # Final stage
 FROM alpine:3.18
@@ -29,11 +28,10 @@ RUN apk add --no-cache \
     && chmod +x /usr/local/bin/migrate \
     && rm -rf /tmp/*
 
-# Copy binaries and required files
-COPY --from=builder /app/http-service .
-COPY --from=builder /app/consumer-service .
-COPY api/migration ./migration
-COPY api/config ./config
+# Copy binary and required files from builder
+COPY --from=builder /app/gau-cloud-service .
+COPY migration ./migration
+COPY config ./config
 COPY entrypoint.sh .
 
 RUN chmod +x entrypoint.sh
