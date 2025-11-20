@@ -1,6 +1,9 @@
+-- Enable UUID extension if not already enabled
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
 -- Create IAM users table
 CREATE TABLE IF NOT EXISTS iam_users (
-    id SERIAL PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     access_key VARCHAR(64) UNIQUE NOT NULL,
     secret_key VARCHAR(128) NOT NULL,
     name VARCHAR(255) NOT NULL,

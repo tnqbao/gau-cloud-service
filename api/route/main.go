@@ -16,7 +16,14 @@ func SetupRouter(ctrl *controller.Controller) *gin.Engine {
 	apiRoutes := r.Group("/api/v1/cloud")
 	{
 		apiRoutes.Use(middles.AuthMiddleware)
-		apiRoutes.POST("/iam", ctrl.CreateIAM)
+
+		aimRoutes := apiRoutes.Group("/aim")
+		{
+			aimRoutes.POST("/", ctrl.CreateIAM)
+			aimRoutes.GET("/", ctrl.ListIAMs)
+			aimRoutes.DELETE("/:id", ctrl.DeleteIAMByID)
+			aimRoutes.PUT("/:id", ctrl.UpdateIAMByID)
+		}
 
 	}
 	return r

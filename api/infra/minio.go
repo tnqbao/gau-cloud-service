@@ -8,6 +8,15 @@ import (
 	"github.com/tnqbao/gau-cloud-orchestrator/config"
 )
 
+// MinIO built-in policies
+const (
+	PolicyReadWrite    = "readwrite"    // Full access to all buckets
+	PolicyReadOnly     = "readonly"     // Read-only access to all buckets
+	PolicyWriteOnly    = "writeonly"    // Write-only access to all buckets
+	PolicyConsoleAdmin = "consoleAdmin" // Console admin access
+	PolicyDiagnostics  = "diagnostics"  // Diagnostics access
+)
+
 type MinioClient struct {
 	Admin    *madmin.AdminClient
 	Endpoint string
@@ -48,6 +57,37 @@ func (m *MinioClient) CreateIAMUser(ctx context.Context, accessKey, secretKey st
 	err := m.Admin.AddUser(ctx, accessKey, secretKey)
 	if err != nil {
 		return fmt.Errorf("failed to create MinIO IAM user: %w", err)
+	}
+
+	return nil
+}
+
+// AttachPolicyToUser attaches a policy to an IAM user
+func (m *MinioClient) AttachPolicyToUser(ctx context.Context, accessKey, policyName string) error {
+	if accessKey == "" || policyName == "" {
+		return fmt.Errorf("accessKey and policyName cannot be empty")
+	}
+
+	err := m.Admin.SetPolicy(ctx, policyName, accessKey, false)
+	if err != nil {
+		return fmt.Errorf("failed to attach policy to MinIO user: %w", err)
+	}
+
+	return nil
+}
+
+// CreateIAMUserWithPolicy creates a user and attaches a policy in one operation
+func (m *MinioClient) CreateIAMUserWithPolicy(ctx context.Context, accessKey, secretKey, policyName string) error {
+	// Create user first
+	if err := m.CreateIAMUser(ctx, accessKey, secretKey); err != nil {
+		return err
+	}
+
+	// Attach policy to user
+	if err := m.AttachPolicyToUser(ctx, accessKey, policyName); err != nil {
+		// Rollback: delete user if policy attachment fails
+		_ = m.DeleteIAMUser(ctx, accessKey)
+		return err
 	}
 
 	return nil

@@ -3,6 +3,7 @@ package repository
 import (
 	"errors"
 
+	"github.com/google/uuid"
 	"github.com/tnqbao/gau-cloud-orchestrator/entity"
 	"gorm.io/gorm"
 )
@@ -25,9 +26,9 @@ func (r *IAMUserRepository) Create(user *entity.IAMUser) error {
 	return r.db.Create(user).Error
 }
 
-func (r *IAMUserRepository) GetByID(id uint) (*entity.IAMUser, error) {
+func (r *IAMUserRepository) GetByID(id uuid.UUID) (*entity.IAMUser, error) {
 	var user entity.IAMUser
-	err := r.db.First(&user, id).Error
+	err := r.db.First(&user, "id = ?", id).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errors.New("iam user not found")
@@ -68,8 +69,8 @@ func (r *IAMUserRepository) Update(user *entity.IAMUser) error {
 	return r.db.Save(user).Error
 }
 
-func (r *IAMUserRepository) Delete(id uint) error {
-	return r.db.Delete(&entity.IAMUser{}, id).Error
+func (r *IAMUserRepository) Delete(id uuid.UUID) error {
+	return r.db.Delete(&entity.IAMUser{}, "id = ?", id).Error
 }
 
 func (r *IAMUserRepository) List() ([]*entity.IAMUser, error) {
@@ -121,4 +122,13 @@ func (r *IAMUserRepository) CheckIAMExistsByName(name string) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func (r *IAMUserRepository) ListByUserID(userID uuid.UUID) ([]*entity.IAMUser, error) {
+	var users []*entity.IAMUser
+	err := r.db.Where("id = ?", userID).Limit(12).Find(&users).Error
+	if err != nil {
+		return nil, err
+	}
+	return users, nil
 }
