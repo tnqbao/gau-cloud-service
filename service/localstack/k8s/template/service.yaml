@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gau-localstack-service
+  namespace: bao-${DEPLOY_ENV}-env
+  labels:
+    app: bao-platform
+    env: ${DEPLOY_ENV}
+spec:
+  selector:
+    app: gau-localstack-service
+  ports:
+    - name: edge
+      port: 4566
+      targetPort: 4566
+      protocol: TCP
+    - name: ext-services
+      port: 4571
+      targetPort: 4571
+      protocol: TCP
+  type: ClusterIP

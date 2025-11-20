@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: localstack-plugins-cm
+  namespace: bao-${DEPLOY_ENV}-env
+data:
+  plugin.py: |
+    from localstack.http import Request, Response
+    import requests
+
+    BACKEND_URL = "http://gau-cloud-service:8080"
+
+    def proxy_handler(request: Request):
+        url = BACKEND_URL + request.path
+        resp = requests.request(
+            method=request.method,
+            url=url,
+            headers=request.headers,
+            data=request.data,
+            allow_redirects=False,
+        )
+        return Response(resp.content, status=resp.status_code, headers=resp.headers)
+
+    def init():
+        from localstack.services.generic_proxy import GenericProxy
+        GenericProxy.register("s3", proxy_handler)
+        GenericProxy.register("ec2", proxy_handler)
