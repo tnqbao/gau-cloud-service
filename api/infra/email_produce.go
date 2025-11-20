@@ -1,4 +1,4 @@
-package provider
+package infra
 
 import (
 	"context"
@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	amqp "github.com/rabbitmq/amqp091-go"
-	"github.com/tnqbao/gau-cloud-orchestrator/infra"
 )
 
 type EmailMessage struct {
@@ -17,17 +16,17 @@ type EmailMessage struct {
 	ActionUrl     string `json:"actionUrl,omitempty"`
 }
 
-type EmailProducer struct {
-	rabbitmq *infra.RabbitMQClient
+type EmailService struct {
+	rabbitmq *RabbitMQClient
 }
 
-func NewEmailProducer(rabbitmq *infra.RabbitMQClient) *EmailProducer {
-	return &EmailProducer{
+func InitEmailService(rabbitmq *RabbitMQClient) *EmailService {
+	return &EmailService{
 		rabbitmq: rabbitmq,
 	}
 }
 
-func (p *EmailProducer) SendEmailConfirmation(ctx context.Context, email, recipientName, content, actionUrl string) error {
+func (s *EmailService) SendEmailConfirmation(ctx context.Context, email, recipientName, content, actionUrl string) error {
 	message := EmailMessage{
 		Type:          "confirmation",
 		Recipient:     email,
@@ -36,10 +35,10 @@ func (p *EmailProducer) SendEmailConfirmation(ctx context.Context, email, recipi
 		ActionUrl:     actionUrl,
 	}
 
-	return p.publishEmail(ctx, "email.confirmation", message)
+	return s.publishEmail(ctx, "email.confirmation", message)
 }
 
-func (p *EmailProducer) SendEmailNotification(ctx context.Context, email, recipientName, content, actionUrl string) error {
+func (s *EmailService) SendEmailNotification(ctx context.Context, email, recipientName, content, actionUrl string) error {
 	message := EmailMessage{
 		Type:          "notification",
 		Recipient:     email,
@@ -48,10 +47,10 @@ func (p *EmailProducer) SendEmailNotification(ctx context.Context, email, recipi
 		ActionUrl:     actionUrl,
 	}
 
-	return p.publishEmail(ctx, "email.notification", message)
+	return s.publishEmail(ctx, "email.notification", message)
 }
 
-func (p *EmailProducer) SendEmailWarning(ctx context.Context, email, recipientName, content, actionUrl string) error {
+func (s *EmailService) SendEmailWarning(ctx context.Context, email, recipientName, content, actionUrl string) error {
 	message := EmailMessage{
 		Type:          "warning",
 		Recipient:     email,
@@ -60,16 +59,16 @@ func (p *EmailProducer) SendEmailWarning(ctx context.Context, email, recipientNa
 		ActionUrl:     actionUrl,
 	}
 
-	return p.publishEmail(ctx, "email.warning", message)
+	return s.publishEmail(ctx, "email.warning", message)
 }
 
-func (p *EmailProducer) publishEmail(ctx context.Context, routingKey string, message EmailMessage) error {
+func (s *EmailService) publishEmail(ctx context.Context, routingKey string, message EmailMessage) error {
 	body, err := json.Marshal(message)
 	if err != nil {
 		return fmt.Errorf("failed to marshal email message: %w", err)
 	}
 
-	err = p.rabbitmq.Channel.PublishWithContext(
+	err = s.rabbitmq.Channel.PublishWithContext(
 		ctx,
 		"email_exchange", // exchange
 		routingKey,       // routing key

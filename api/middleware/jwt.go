@@ -6,11 +6,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/tnqbao/gau-cloud-orchestrator/config"
-	"github.com/tnqbao/gau-cloud-orchestrator/provider"
+	"github.com/tnqbao/gau-cloud-orchestrator/infra"
 	"github.com/tnqbao/gau-cloud-orchestrator/utils"
 )
 
-func AuthMiddleware(authProvider *provider.AuthorizationServiceProvider, config *config.EnvConfig) gin.HandlerFunc {
+func AuthMiddleware(authService *infra.AuthorizationService, config *config.EnvConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var tokenStr string
 
@@ -30,7 +30,7 @@ func AuthMiddleware(authProvider *provider.AuthorizationServiceProvider, config 
 			return
 		}
 
-		if err := authProvider.CheckAccessToken(tokenStr); err != nil {
+		if err := authService.CheckAccessToken(tokenStr); err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
 			c.Abort()
 			return

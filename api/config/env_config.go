@@ -36,6 +36,11 @@ type EnvConfig struct {
 		Username string
 		Password string
 	}
+	Minio struct {
+		Endpoint     string
+		RootUser     string
+		RootPassword string
+	}
 	ExternalService struct {
 		AuthorizationServiceURL string
 		UploadServiceURL        string
@@ -102,6 +107,10 @@ func LoadEnvConfig() *EnvConfig {
 	if config.RabbitMQ.Password == "" {
 		config.RabbitMQ.Password = "guest"
 	}
+
+	config.Minio.Endpoint = os.Getenv("MINIO_ENDPOINT")
+	config.Minio.RootUser = os.Getenv("MINIO_ROOT_USER")
+	config.Minio.RootPassword = os.Getenv("MINIO_ROOT_PASSWORD")
 
 	config.PrivateKey = os.Getenv("PRIVATE_KEY")
 

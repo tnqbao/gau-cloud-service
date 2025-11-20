@@ -5,10 +5,14 @@ import (
 )
 
 type Infra struct {
-	Redis    *RedisClient
-	Postgres *PostgresClient
-	Logger   *LoggerClient
-	RabbitMQ *RabbitMQClient
+	Redis                *RedisClient
+	Postgres             *PostgresClient
+	Logger               *LoggerClient
+	RabbitMQ             *RabbitMQClient
+	AuthorizationService *AuthorizationService
+	UploadService        *UploadService
+	EmailService         *EmailService
+	Minio                *MinioClient
 }
 
 var infraInstance *Infra
@@ -38,11 +42,35 @@ func InitInfra(cfg *config.Config) *Infra {
 		panic("Failed to initialize RabbitMQ service")
 	}
 
+	authorizationService := InitAuthorizationService(cfg.EnvConfig)
+	if authorizationService == nil {
+		panic("Failed to initialize Authorization service")
+	}
+
+	uploadService := InitUploadService(cfg.EnvConfig)
+	if uploadService == nil {
+		panic("Failed to initialize Upload service")
+	}
+
+	emailService := InitEmailService(rabbitMQ)
+	if emailService == nil {
+		panic("Failed to initialize Email service")
+	}
+
+	minio := InitMinioClient(cfg.EnvConfig)
+	if minio == nil {
+		panic("Failed to initialize MinIO service")
+	}
+
 	infraInstance = &Infra{
-		Redis:    redis,
-		Postgres: postgres,
-		Logger:   logger,
-		RabbitMQ: rabbitMQ,
+		Redis:                redis,
+		Postgres:             postgres,
+		Logger:               logger,
+		RabbitMQ:             rabbitMQ,
+		AuthorizationService: authorizationService,
+		UploadService:        uploadService,
+		EmailService:         emailService,
+		Minio:                minio,
 	}
 
 	return infraInstance

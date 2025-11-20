@@ -1,4 +1,4 @@
-package provider
+package infra
 
 import (
 	"bytes"
@@ -11,12 +11,12 @@ import (
 	"github.com/tnqbao/gau-cloud-orchestrator/config"
 )
 
-type UploadServiceProvider struct {
-	UploadServiceURL string `json:"upload_service_url"`
-	PrivateKey       string `json:"private_key,omitempty"`
+type UploadService struct {
+	UploadServiceURL string
+	PrivateKey       string
 }
 
-func NewUploadServiceProvider(config *config.EnvConfig) *UploadServiceProvider {
+func InitUploadService(config *config.EnvConfig) *UploadService {
 	if config.ExternalService.UploadServiceURL == "" {
 		panic("Upload service URL is not configured")
 	}
@@ -25,14 +25,14 @@ func NewUploadServiceProvider(config *config.EnvConfig) *UploadServiceProvider {
 		panic("Private key is not configured")
 	}
 
-	return &UploadServiceProvider{
+	return &UploadService{
 		UploadServiceURL: config.ExternalService.UploadServiceURL,
 		PrivateKey:       config.PrivateKey,
 	}
 }
 
-func (p *UploadServiceProvider) UploadAvatarImage(userID string, imageData []byte, filename string, contentType string) (string, error) {
-	url := fmt.Sprintf("%s/api/v2/upload/image", p.UploadServiceURL)
+func (s *UploadService) UploadAvatarImage(userID string, imageData []byte, filename string, contentType string) (string, error) {
+	url := fmt.Sprintf("%s/api/v2/upload/image", s.UploadServiceURL)
 
 	// Prepare multipart form data
 	var b bytes.Buffer
@@ -62,7 +62,7 @@ func (p *UploadServiceProvider) UploadAvatarImage(userID string, imageData []byt
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", w.FormDataContentType())
-	req.Header.Set("Private-Key", p.PrivateKey)
+	req.Header.Set("Private-Key", s.PrivateKey)
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
