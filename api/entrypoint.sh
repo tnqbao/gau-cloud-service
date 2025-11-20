@@ -8,10 +8,10 @@ echo "Starting service: $SERVICE_TYPE"
 # Detect migration path - container uses /app, local uses relative path
 if [ -d "/app/migration" ]; then
     MIGRATION_PATH="/app/migration"
-    BINARY_PATH="/app/gau-cloud-service"
+    BINARY_PATH="/app/gau-cloud-service.bin"
 elif [ -d "./migration" ]; then
     MIGRATION_PATH="./migration"
-    BINARY_PATH="./gau-cloud-service"
+    BINARY_PATH="./gau-cloud-service.bin"
 else
     echo "ERROR: Migration directory not found in /app/migration or ./migration"
     exit 1
