@@ -12,7 +12,7 @@ func (ctrl *Controller) CreateIAM(c *gin.Context) {
 	ctx := c.Request.Context()
 	ctrl.Infra.Logger.InfoWithContextf(ctx, "[IAM] Received CreateIAM request")
 
-	userIDStr := c.GetString("user_id")
+	userIDStr := c.MustGet("user_id")
 	if userIDStr == "" {
 		ctrl.Infra.Logger.ErrorWithContextf(ctx, nil, "[IAM] user_id not found in context")
 		utils.JSON401(c, "Unauthorized: user_id not found")
