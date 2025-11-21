@@ -9,7 +9,7 @@ func BuildPolicyJSON(role string) []byte {
 		{
 			"Effect": "Allow",
 			"Action": ["s3:*"],
-			"Resource": []
+			"Resource": ["arn:aws:s3:::dummy-bucket"]
 		}
 	]
 }`)
@@ -25,7 +25,7 @@ func BuildPolicyJSON(role string) []byte {
 				"s3:DeleteObject",
 				"s3:ListBucket"
 			],
-			"Resource": []
+			"Resource": ["arn:aws:s3:::dummy-bucket"]
 		}
 	]
 }`)
@@ -36,7 +36,7 @@ func BuildPolicyJSON(role string) []byte {
 		{
 			"Effect": "Allow",
 			"Action": ["s3:GetObject", "s3:ListBucket"],
-			"Resource": []
+			"Resource": ["arn:aws:s3:::dummy-bucket"]
 		}
 	]
 }`)
@@ -47,7 +47,7 @@ func BuildPolicyJSON(role string) []byte {
 		{
 			"Effect": "Allow",
 			"Action": ["s3:*"],
-			"Resource": []
+			"Resource": ["arn:aws:s3:::dummy-bucket"]
 		}
 	]
 }`)
