@@ -23,6 +23,6 @@ func main() {
 
 	ctrl := controller.NewController(cfg, infra, repo)
 
-	router := routes.routes.SetupRouter(ctrl)
+	router := routes.SetupRouter(ctrl)
 	router.Run(":8080")
 }
