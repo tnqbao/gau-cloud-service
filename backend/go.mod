@@ -1,6 +1,6 @@
 module github.com/tnqbao/gau-cloud-orchestrator
 
-go 1.25.1
+go 1.24.0
 
 require (
 	github.com/gin-contrib/cors v1.7.2

@@ -54,9 +54,15 @@ jobs:
       - name: Check active pods
         run: kubectl get pods -n bao-staging-env
 
-      - name: Restart pods
+      - name: Restart HTTP pods
         run: |
           kubectl rollout restart deployment gau-cloud-http-deployment -n bao-staging-env
-          sleep 10
-          kubectl get pods -n bao-staging-env
+          sleep 5
 
+      - name: Restart Consumer pods
+        run: |
+          kubectl rollout restart deployment gau-cloud-consumer-deployment -n bao-staging-env
+          sleep 5
+
+      - name: Verify deployments
+        run: kubectl get pods -n bao-staging-env
