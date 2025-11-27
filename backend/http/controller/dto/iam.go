@@ -13,3 +13,9 @@ type UpdateIAMRequestDTO struct {
 	Email string `json:"email" binding:"omitempty,email,max=255"`
 	Role  string `json:"role" binding:"omitempty,oneof=admin user viewer"`
 }
+
+type UpdatePolicyRequestDTO struct {
+	IAMID     string `json:"iam_id" binding:"required,uuid"`
+	AccessKey string `json:"access_key" binding:"required,min=8,max=64"`
+	SecretKey string `json:"secret_key" binding:"required,min=8,max=128"`
+}

@@ -5,7 +5,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/tnqbao/gau-cloud-orchestrator/entity"
 	"github.com/tnqbao/gau-cloud-orchestrator/http/controller/dto"
+	"github.com/tnqbao/gau-cloud-orchestrator/infra/produce"
 	"github.com/tnqbao/gau-cloud-orchestrator/utils"
+	"time"
 )
 
 func (ctrl *Controller) CreateIAM(c *gin.Context) {
@@ -251,4 +253,136 @@ func (ctrl Controller) UpdateIAMByID(c *gin.Context) {
 
 	ctrl.Infra.Logger.InfoWithContextf(ctx, "[IAM] Successfully updated IAM user with ID: %s", iamID.String())
 	utils.JSON200(c, gin.H{"iam_user": iamUser})
+}
+
+func (ctrl *Controller) UpdateIAMCredentials(c *gin.Context) {
+	ctx := c.Request.Context()
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[IAM] Received UpdateIAMCredentials request")
+
+	// Validate JWT and get user_id
+	userIDStr := c.GetString("user_id")
+	if userIDStr == "" {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, nil, "[IAM] user_id not found in context")
+		utils.JSON401(c, "Unauthorized: user_id not found")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[IAM] Invalid user_id format: %v", err)
+		utils.JSON400(c, "Invalid user_id format")
+		return
+	}
+
+	// Bind request
+	var req dto.UpdatePolicyRequestDTO
+	if err := c.ShouldBindJSON(&req); err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[IAM] Failed to bind UpdatePolicyRequest: %v", err)
+		utils.JSON400(c, "Invalid request payload")
+		return
+	}
+
+	// Parse IAM ID
+	iamID, err := uuid.Parse(req.IAMID)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[IAM] Invalid IAM ID format: %v", err)
+		utils.JSON400(c, "Invalid IAM ID format")
+		return
+	}
+
+	// Get IAM user from database to verify ownership
+	iamUser, err := ctrl.Repository.IAMUserRepo.GetByID(iamID)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[IAM] IAM user not found: %v", err)
+		utils.JSON404(c, "IAM user not found")
+		return
+	}
+
+	// Verify that this IAM belongs to the authenticated user
+	if iamUser.UserId != userID {
+		ctrl.Infra.Logger.WarningWithContextf(ctx, "[IAM] User %s attempted to update IAM %s owned by user %s", userID.String(), iamID.String(), iamUser.UserId.String())
+		utils.JSON403(c, "Forbidden: You don't have permission to update this IAM")
+		return
+	}
+
+	// Check if new access key already exists (avoid conflicts)
+	if req.AccessKey != iamUser.AccessKey {
+		exists, err := ctrl.Repository.IAMUserRepo.ExistsByAccessKey(req.AccessKey)
+		if err != nil {
+			ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[IAM] Error checking access key existence: %v", err)
+			utils.JSON500(c, "Error checking access key existence")
+			return
+		}
+		if exists {
+			ctrl.Infra.Logger.WarningWithContextf(ctx, "[IAM] Access key '%s' already exists", req.AccessKey)
+			utils.JSON409(c, "Access key already exists")
+			return
+		}
+	}
+
+	// Get policy from database
+	policies, err := ctrl.Repository.IAMPolicyRepo.GetByIAMID(iamID)
+	if err != nil || len(policies) == 0 {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[IAM] Failed to get policies: %v", err)
+		utils.JSON500(c, "Failed to get IAM policies")
+		return
+	}
+
+	oldPolicy := policies[0]
+	oldPolicyName := iamUser.AccessKey + "-s3-policy"
+	newPolicyName := req.AccessKey + "-s3-policy"
+
+	// Step 1: Delete old IAM user from MinIO
+	err = ctrl.Infra.Minio.DeleteIAMUser(ctx, iamUser.AccessKey)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[IAM] Failed to delete old IAM user from MinIO: %v", err)
+		utils.JSON500(c, "Failed to delete old IAM user from MinIO")
+		return
+	}
+
+	// Step 2: Create new IAM user with new credentials on MinIO
+	err = ctrl.Infra.Minio.CreateIAMUser(ctx, req.AccessKey, req.SecretKey)
+	if err != nil {
+		// Rollback: Recreate old user
+		_ = ctrl.Infra.Minio.CreateIAMUser(ctx, iamUser.AccessKey, iamUser.SecretKey)
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[IAM] Failed to create new IAM user on MinIO: %v", err)
+		utils.JSON500(c, "Failed to create new IAM user on MinIO")
+		return
+	}
+
+	// Step 3: Update access_key and secret_key in database
+	iamUser.AccessKey = req.AccessKey
+	iamUser.SecretKey = req.SecretKey
+
+	err = ctrl.Repository.IAMUserRepo.Update(iamUser)
+	if err != nil {
+		// Rollback: Delete new user and recreate old user
+		_ = ctrl.Infra.Minio.DeleteIAMUser(ctx, req.AccessKey)
+		_ = ctrl.Infra.Minio.CreateIAMUser(ctx, iamUser.AccessKey, iamUser.SecretKey)
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[IAM] Failed to update IAM user in database: %v", err)
+		utils.JSON500(c, "Failed to update IAM user in database")
+		return
+	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[IAM] Successfully updated IAM credentials for ID: %s", iamID.String())
+
+	// Step 4: Async update policy on MinIO via message queue
+	msg := produce.UpdateIAMPolicyMessage{
+		IAMID:         req.IAMID,
+		OldPolicyName: oldPolicyName,
+		NewPolicyName: newPolicyName,
+		PolicyJSON:    oldPolicy.Policy,
+		Timestamp:     time.Now().Unix(),
+	}
+
+	err = ctrl.Infra.Produce.IAMService.PublishUpdatePolicy(ctx, msg)
+	if err != nil {
+		// Log error but don't fail the request since credentials already updated
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[IAM] Failed to publish update policy message (non-critical): %v", err)
+	}
+
+	utils.JSON200(c, gin.H{
+		"message": "Update IAM successfully",
+		"iam_id":  iamID.String(),
+	})
 }

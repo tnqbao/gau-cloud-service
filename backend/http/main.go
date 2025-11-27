@@ -7,7 +7,7 @@ import (
 	"github.com/tnqbao/gau-cloud-orchestrator/config"
 	"github.com/tnqbao/gau-cloud-orchestrator/http/controller"
 	"github.com/tnqbao/gau-cloud-orchestrator/http/route"
-	"github.com/tnqbao/gau-cloud-orchestrator/infra"
+	infraPkg "github.com/tnqbao/gau-cloud-orchestrator/infra"
 	"github.com/tnqbao/gau-cloud-orchestrator/repository"
 )
 
@@ -18,11 +18,15 @@ func main() {
 	}
 
 	cfg := config.NewConfig()
-	infra := infra.InitInfra(cfg)
+	infra := infraPkg.InitInfra(cfg)
 	repo := repository.InitRepository(infra)
 
 	ctrl := controller.NewController(cfg, infra, repo)
 
-	router := routes.routes.SetupRouter(ctrl)
-	router.Run(":8080")
+	router := routes.SetupRouter(ctrl)
+
+	log.Println("HTTP Server started on :8080")
+	if err := router.Run(":8080"); err != nil {
+		log.Fatalf("Failed to start server: %v", err)
+	}
 }

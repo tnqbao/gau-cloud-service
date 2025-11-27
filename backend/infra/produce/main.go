@@ -4,6 +4,7 @@ import amqp "github.com/rabbitmq/amqp091-go"
 
 type Produce struct {
 	EmailService *EmailService
+	IAMService   *IAMService
 }
 
 var produceInstance *Produce
@@ -18,8 +19,14 @@ func InitProduce(channel *amqp.Channel) *Produce {
 		panic("Failed to initialize Email service")
 	}
 
+	iamService := InitIAMService(channel)
+	if iamService == nil {
+		panic("Failed to initialize IAM service")
+	}
+
 	produceInstance = &Produce{
 		EmailService: emailService,
+		IAMService:   iamService,
 	}
 
 	return produceInstance

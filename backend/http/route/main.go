@@ -8,7 +8,7 @@ import (
 
 func SetupRouter(ctrl *controller.Controller) *gin.Engine {
 	r := gin.Default()
-	middles, err := middlewares.middlewares.NewMiddlewares(ctrl)
+	middles, err := middlewares.NewMiddlewares(ctrl)
 	if err != nil {
 		panic(err)
 	}
@@ -23,6 +23,7 @@ func SetupRouter(ctrl *controller.Controller) *gin.Engine {
 			aimRoutes.GET("/", ctrl.ListIAMs)
 			aimRoutes.DELETE("/:id", ctrl.DeleteIAMByID)
 			aimRoutes.PUT("/:id", ctrl.UpdateIAMByID)
+			aimRoutes.PUT("/credentials/update", ctrl.UpdateIAMCredentials)
 		}
 
 	}
