@@ -131,3 +131,12 @@ func (r *IAMUserRepository) ListByUserID(userID uuid.UUID) ([]*entity.IAMUser, e
 	}
 	return users, nil
 }
+
+func (r *IAMUserRepository) GetByUserID(userID uuid.UUID) ([]entity.IAMUser, error) {
+	var users []entity.IAMUser
+	err := r.db.Where("user_id = ?", userID).Find(&users).Error
+	if err != nil {
+		return nil, err
+	}
+	return users, nil
+}

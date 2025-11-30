@@ -35,6 +35,13 @@ func main() {
 		log.Fatalf("Failed to start IAM consumer: %v", err)
 	}
 
+	// Start Bucket Consumer
+	bucketConsumer := worker.NewBucketConsumer(infra.RabbitMQ.Channel, infra, repo)
+	if err := bucketConsumer.Start(ctx); err != nil {
+		infra.Logger.ErrorWithContextf(ctx, err, "Failed to start Bucket consumer: %v", err)
+		log.Fatalf("Failed to start Bucket consumer: %v", err)
+	}
+
 	// Wait for interrupt signal to gracefully shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

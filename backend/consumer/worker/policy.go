@@ -27,9 +27,7 @@ func NewIAMConsumer(channel *amqp.Channel, infra *infra.Infra, repo *repository.
 	}
 }
 
-// Start consumer to listen for update policy messages
 func (c *IAMConsumer) Start(ctx context.Context) error {
-	// Start Update Policy Consumer
 	if err := c.startUpdatePolicyConsumer(ctx); err != nil {
 		return fmt.Errorf("failed to start update policy consumer: %w", err)
 	}
@@ -37,13 +35,11 @@ func (c *IAMConsumer) Start(ctx context.Context) error {
 	return nil
 }
 
-// ==================== Update Policy Topic ====================
-
 func (c *IAMConsumer) startUpdatePolicyConsumer(ctx context.Context) error {
 	msgs, err := c.channel.Consume(
 		produce.IAMUpdatePolicyQueue,
 		"",
-		false, // auto-ack = false (manual ack)
+		false,
 		false,
 		false,
 		false,
@@ -84,7 +80,6 @@ func (c *IAMConsumer) handleUpdatePolicy(ctx context.Context, msg amqp.Delivery)
 		return
 	}
 
-	// Parse IAM ID
 	iamID, err := uuid.Parse(payload.IAMID)
 	if err != nil {
 		c.infra.Logger.ErrorWithContextf(ctx, err, "[IAM Consumer - Update Policy] Invalid IAM ID: %v", err)
@@ -92,7 +87,6 @@ func (c *IAMConsumer) handleUpdatePolicy(ctx context.Context, msg amqp.Delivery)
 		return
 	}
 
-	// Execute update policy with retry logic
 	maxRetries := 3
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		err = c.executeUpdatePolicy(ctx, iamID, payload.OldPolicyName, payload.NewPolicyName, payload.PolicyJSON)
