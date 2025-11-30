@@ -8,3 +8,4 @@ resources:
   - ./base/pvc.yaml
   - ./base/ingress.yaml
   - ./base/pv.yaml
+  - ./base/middleware.yaml

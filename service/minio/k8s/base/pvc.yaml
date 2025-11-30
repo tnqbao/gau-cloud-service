@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gau-minio-pvc
+  namespace: bao-staging-env
+  labels:
+    app: bao-platform
+    env: staging
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: minio-local
+  resources:
+    requests:
+      storage: 180Gi

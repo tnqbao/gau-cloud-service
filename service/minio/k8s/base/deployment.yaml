@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gau-minio-deployment
+  namespace: bao-staging-env
+  labels:
+    app: bao-platform
+    env: staging
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gau-minio-service
+  template:
+    metadata:
+      labels:
+        app: gau-minio-service
+        env: staging
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:latest
+          imagePullPolicy: IfNotPresent
+          command: ["minio", "server", "/data", "--console-address", ":9001"]
+
+          ports:
+            - name: api
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: gau-minio-staging-secret
+                  key: MINIO_ROOT_USER
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: gau-minio-staging-secret
+                  key: MINIO_ROOT_PASSWORD
+
+          envFrom:
+            - configMapRef:
+                name: gau-minio-staging-config
+
+          volumeMounts:
+            - name: minio-data
+              mountPath: /data
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+
+      volumes:
+        - name: minio-data
+          persistentVolumeClaim:
+            claimName: gau-minio-pvc

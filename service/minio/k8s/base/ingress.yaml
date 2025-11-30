@@ -2,16 +2,16 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: gau-minio-ingress
-  namespace: bao-${DEPLOY_ENV}-env
+  namespace: bao-staging-env
   labels:
     app: bao-platform
-    env: ${DEPLOY_ENV}
+    env: staging
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: web
-    traefik.ingress.kubernetes.io/router.middlewares: bao-${DEPLOY_ENV}-env-minio-upload-limit-2gb@kubernetescrd
+    traefik.ingress.kubernetes.io/router.middlewares: bao-staging-env-minio-upload-limit-2gb@kubernetescrd
 spec:
   rules:
-    - host: "${API_DOMAIN}"
+    - host: "s3.gauas.online"
       http:
         paths:
           - path: /
@@ -21,7 +21,7 @@ spec:
                 name: gau-minio-service
                 port:
                   number: 9000
-    - host: "${DASHBOARD_DOMAIN}"
+    - host: "minio.gauas.online"
       http:
         paths:
           - path: /
