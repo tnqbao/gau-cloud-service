@@ -26,14 +26,15 @@ func (ctrl *Controller) CreateBucket(c *gin.Context) {
 		return
 	}
 
-	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Bucket] Creating a new bucket for user_id: %s", userID)
-
 	var req dto.CreateBucketRequestDTO
 	if err := c.ShouldBindJSON(&req); err != nil {
 		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Failed to bind JSON: %v", err)
 		utils.JSON400(c, "Invalid request payload")
 		return
 	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Bucket] Creating bucket '%s' in region '%s' for user_id: %s",
+		req.Name, req.Region, userID)
 
 	// Check if bucket with the same name already exists
 	existsByName, err := ctrl.Repository.BucketRepo.ExistsByName(req.Name)
@@ -75,6 +76,16 @@ func (ctrl *Controller) CreateBucket(c *gin.Context) {
 		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Failed to create bucket in database: %v", err)
 		utils.JSON500(c, "Failed to create bucket in database")
 		return
+	}
+
+	// Publish message to update IAM policies for all user's IAM users
+	err = ctrl.Infra.Produce.BucketService.PublishUpdateBucketPolicy(ctx, userID.String(), req.Name)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Failed to publish update policy message: %v", err)
+		// Don't fail the request, just log the error
+		// The bucket is already created, policy update can be done manually if needed
+	} else {
+		ctrl.Infra.Logger.InfoWithContextf(ctx, "[Bucket] Published update policy message for bucket: %s", req.Name)
 	}
 
 	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Bucket] Successfully created bucket: %s", bucket.ID)

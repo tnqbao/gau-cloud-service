@@ -1,13 +1,14 @@
 package controller
 
 import (
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tnqbao/gau-cloud-orchestrator/entity"
 	"github.com/tnqbao/gau-cloud-orchestrator/http/controller/dto"
 	"github.com/tnqbao/gau-cloud-orchestrator/infra/produce"
 	"github.com/tnqbao/gau-cloud-orchestrator/utils"
-	"time"
 )
 
 func (ctrl *Controller) CreateIAM(c *gin.Context) {
@@ -36,6 +37,14 @@ func (ctrl *Controller) CreateIAM(c *gin.Context) {
 		return
 	}
 
+	// Force role to be "user" - admin role cannot be created via API
+	if req.Role == "" || req.Role == "admin" {
+		req.Role = "user"
+	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[IAM] Creating IAM for user %s with name '%s', access_key '%s'",
+		userID.String(), req.Name, MaskAccessKey(req.AccessKey))
+
 	// Check if IAM user with the same name already exists
 	existsByName, err := ctrl.Repository.IAMUserRepo.CheckIAMExistsByName(req.Name)
 	if err != nil {
@@ -61,20 +70,6 @@ func (ctrl *Controller) CreateIAM(c *gin.Context) {
 	if existsByAccessKey {
 		ctrl.Infra.Logger.WarningWithContextf(ctx, "[IAM] IAM with access key '%s' already exists", req.AccessKey)
 		utils.JSON409(c, "IAM user with this access key already exists")
-		return
-	}
-
-	// Check if IAM user with the same email already exists
-	existsByEmail, err := ctrl.Repository.IAMUserRepo.ExistsByEmail(req.Email)
-	if err != nil {
-		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[IAM] Error checking IAM email existence: %v", err)
-		utils.JSON500(c, "Error checking IAM email existence")
-		return
-	}
-
-	if existsByEmail {
-		ctrl.Infra.Logger.WarningWithContextf(ctx, "[IAM] IAM with email '%s' already exists", req.Email)
-		utils.JSON409(c, "IAM user with this email already exists")
 		return
 	}
 
@@ -139,11 +134,20 @@ func (ctrl *Controller) CreateIAM(c *gin.Context) {
 	}
 
 	ctrl.Infra.Logger.InfoWithContextf(ctx, "[IAM] Successfully created IAM with ID: %s, UserID: %s, Name: %s, AccessKey: %s, PolicyName: %s",
-		iamUser.ID.String(), iamUser.UserId.String(), iamUser.Name, iamUser.AccessKey, policyName)
+		iamUser.ID.String(), iamUser.UserId.String(), iamUser.Name, MaskAccessKey(iamUser.AccessKey), policyName)
 
+	// Don't return iam_policy to client - only return basic IAM user info
 	utils.JSON200(c, gin.H{
-		"iam_user":   iamUser,
-		"iam_policy": iamPolicy,
+		"message": "IAM user created successfully",
+		"iam_user": gin.H{
+			"id":         iamUser.ID,
+			"user_id":    iamUser.UserId,
+			"access_key": iamUser.AccessKey,
+			"secret_key": iamUser.SecretKey,
+			"name":       iamUser.Name,
+			"email":      iamUser.Email,
+			"role":       iamUser.Role,
+		},
 	})
 }
 
@@ -281,6 +285,9 @@ func (ctrl *Controller) UpdateIAMCredentials(c *gin.Context) {
 		utils.JSON400(c, "Invalid request payload")
 		return
 	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[IAM] Updating credentials for IAM ID: %s, new access_key: %s",
+		req.IAMID, MaskAccessKey(req.AccessKey))
 
 	// Parse IAM ID
 	iamID, err := uuid.Parse(req.IAMID)

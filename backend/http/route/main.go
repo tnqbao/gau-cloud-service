@@ -26,6 +26,13 @@ func SetupRouter(ctrl *controller.Controller) *gin.Engine {
 			aimRoutes.PUT("/credentials/update", ctrl.UpdateIAMCredentials)
 		}
 
+		bucketRoutes := apiRoutes.Group("/buckets")
+		{
+			bucketRoutes.POST("/", ctrl.CreateBucket)
+			//bucketRoutes.GET("/", ctrl.ListBuckets)
+			//bucketRoutes.DELETE("/:id", ctrl.DeleteBucketByID)
+		}
+
 	}
 	return r
 }

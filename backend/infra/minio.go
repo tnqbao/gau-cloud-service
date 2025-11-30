@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/minio/madmin-go/v3"
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/tnqbao/gau-cloud-orchestrator/config"
 )
 
@@ -19,6 +21,7 @@ const (
 
 type MinioClient struct {
 	Admin    *madmin.AdminClient
+	Client   *minio.Client
 	Endpoint string
 }
 
@@ -43,8 +46,17 @@ func InitMinioClient(cfg *config.EnvConfig) *MinioClient {
 		panic(fmt.Sprintf("Failed to initialize MinIO admin client: %v", err))
 	}
 
+	minioClient, err := minio.New(endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4(rootUser, rootPassword, ""),
+		Secure: false,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("Failed to initialize MinIO client: %v", err))
+	}
+
 	return &MinioClient{
 		Admin:    madminClient,
+		Client:   minioClient,
 		Endpoint: endpoint,
 	}
 }
@@ -236,4 +248,48 @@ func (m *MinioClient) SetIAMUserPolicy(ctx context.Context, accessKey, policyNam
 	}
 
 	return nil
+}
+
+// CreateBucket creates a new bucket in MinIO
+func (m *MinioClient) CreateBucket(ctx context.Context, bucketName, region string) error {
+	if bucketName == "" {
+		return fmt.Errorf("bucketName cannot be empty")
+	}
+
+	err := m.Client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{
+		Region: region,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create bucket: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteBucket deletes a bucket from MinIO
+func (m *MinioClient) DeleteBucket(ctx context.Context, bucketName string) error {
+	if bucketName == "" {
+		return fmt.Errorf("bucketName cannot be empty")
+	}
+
+	err := m.Client.RemoveBucket(ctx, bucketName)
+	if err != nil {
+		return fmt.Errorf("failed to delete bucket: %w", err)
+	}
+
+	return nil
+}
+
+// BucketExists checks if a bucket exists in MinIO
+func (m *MinioClient) BucketExists(ctx context.Context, bucketName string) (bool, error) {
+	if bucketName == "" {
+		return false, fmt.Errorf("bucketName cannot be empty")
+	}
+
+	exists, err := m.Client.BucketExists(ctx, bucketName)
+	if err != nil {
+		return false, fmt.Errorf("failed to check bucket existence: %w", err)
+	}
+
+	return exists, nil
 }

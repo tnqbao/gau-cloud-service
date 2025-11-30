@@ -10,10 +10,14 @@ if [ -d "/app/migration" ]; then
     MIGRATION_PATH="/app/migration"
     HTTP_BINARY="/app/http-server.bin"
     CONSUMER_BINARY="/app/consumer-worker.bin"
+    HTTP_SOURCE="/app/http/main.go"
+    CONSUMER_SOURCE="/app/consumer/consumer_main.go"
 elif [ -d "./migration" ]; then
     MIGRATION_PATH="./migration"
     HTTP_BINARY="./http-server.bin"
     CONSUMER_BINARY="./consumer-worker.bin"
+    HTTP_SOURCE="./http/main.go"
+    CONSUMER_SOURCE="./consumer/consumer_main.go"
 else
     echo "ERROR: Migration directory not found in /app/migration or ./migration"
     exit 1
@@ -57,8 +61,11 @@ case "$SERVICE_TYPE" in
         if [ -f "$HTTP_BINARY" ]; then
             echo "Starting binary: $HTTP_BINARY"
             exec "$HTTP_BINARY"
+        elif [ -f "$HTTP_SOURCE" ]; then
+            echo "Binary not found, running from source: $HTTP_SOURCE"
+            cd "$(dirname "$HTTP_SOURCE")" && exec go run main.go
         else
-            echo "ERROR: HTTP binary not found at $HTTP_BINARY"
+            echo "ERROR: HTTP binary not found at $HTTP_BINARY and source not found at $HTTP_SOURCE"
             echo "Current directory contents:"
             ls -la
             exit 1
@@ -69,8 +76,11 @@ case "$SERVICE_TYPE" in
         if [ -f "$CONSUMER_BINARY" ]; then
             echo "Starting binary: $CONSUMER_BINARY"
             exec "$CONSUMER_BINARY"
+        elif [ -f "$CONSUMER_SOURCE" ]; then
+            echo "Binary not found, running from source: $CONSUMER_SOURCE"
+            cd "$(dirname "$CONSUMER_SOURCE")" && exec go run consumer_main.go
         else
-            echo "ERROR: Consumer binary not found at $CONSUMER_BINARY"
+            echo "ERROR: Consumer binary not found at $CONSUMER_BINARY and source not found at $CONSUMER_SOURCE"
             echo "Current directory contents:"
             ls -la
             exit 1
