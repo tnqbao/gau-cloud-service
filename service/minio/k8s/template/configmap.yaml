@@ -8,4 +8,4 @@ metadata:
     env: ${DEPLOY_ENV}
 data:
   MINIO_BROWSER: "on"
-  MINIO_DOMAIN: "${API_DOMAIN}"
+  MINIO_DOMAIN: "${VIRTUAL_HOST_DOMAIN}"

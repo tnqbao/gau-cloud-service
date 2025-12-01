@@ -8,7 +8,6 @@ metadata:
     env: ${DEPLOY_ENV}
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: web
-    traefik.ingress.kubernetes.io/router.rule-type: "PathPrefix"
 spec:
   rules:
     - host: "${API_DOMAIN}"
@@ -26,14 +25,14 @@ spec:
       http:
         paths:
           - path: /
-            pathType: Prefix
+            pathType: ImplementationSpecific
             backend:
               service:
                 name: gau-minio-service
                 port:
                   number: 9001
 
-    - host: "*.s3.gauas.online"
+    - host: "${VIRTUAL_HOST_DOMAIN}"
       http:
         paths:
           - path: /
