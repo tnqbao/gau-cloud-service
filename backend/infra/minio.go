@@ -280,6 +280,63 @@ func (m *MinioClient) DeleteBucket(ctx context.Context, bucketName string) error
 	return nil
 }
 
+// RemoveAllObjectsFromBucket removes all objects from a bucket
+func (m *MinioClient) RemoveAllObjectsFromBucket(ctx context.Context, bucketName string) error {
+	if bucketName == "" {
+		return fmt.Errorf("bucketName cannot be empty")
+	}
+
+	// List all objects in the bucket
+	objectsCh := m.Client.ListObjects(ctx, bucketName, minio.ListObjectsOptions{
+		Recursive: true,
+	})
+
+	// Create a channel for objects to delete
+	objectsToDelete := make(chan minio.ObjectInfo)
+
+	// Start goroutine to send objects to delete channel
+	go func() {
+		defer close(objectsToDelete)
+		for object := range objectsCh {
+			if object.Err != nil {
+				continue
+			}
+			objectsToDelete <- object
+		}
+	}()
+
+	// Remove objects
+	errorCh := m.Client.RemoveObjects(ctx, bucketName, objectsToDelete, minio.RemoveObjectsOptions{})
+
+	// Check for errors
+	for err := range errorCh {
+		if err.Err != nil {
+			return fmt.Errorf("failed to remove object %s: %w", err.ObjectName, err.Err)
+		}
+	}
+
+	return nil
+}
+
+// DeleteBucketWithObjects deletes a bucket and all its objects
+func (m *MinioClient) DeleteBucketWithObjects(ctx context.Context, bucketName string) error {
+	if bucketName == "" {
+		return fmt.Errorf("bucketName cannot be empty")
+	}
+
+	// First, remove all objects from the bucket
+	if err := m.RemoveAllObjectsFromBucket(ctx, bucketName); err != nil {
+		return fmt.Errorf("failed to remove objects from bucket: %w", err)
+	}
+
+	// Then delete the bucket
+	if err := m.DeleteBucket(ctx, bucketName); err != nil {
+		return fmt.Errorf("failed to delete bucket: %w", err)
+	}
+
+	return nil
+}
+
 // BucketExists checks if a bucket exists in MinIO
 func (m *MinioClient) BucketExists(ctx context.Context, bucketName string) (bool, error) {
 	if bucketName == "" {
