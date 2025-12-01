@@ -12,6 +12,9 @@ const (
 	BucketUpdatePolicyQueue      = "bucket.update.policy"
 	BucketUpdatePolicyExchange   = "bucket.exchange"
 	BucketUpdatePolicyRoutingKey = "bucket.update.policy"
+
+	BucketDeleteQueue      = "bucket.delete"
+	BucketDeleteRoutingKey = "bucket.delete"
 )
 
 type BucketService struct {
@@ -19,6 +22,12 @@ type BucketService struct {
 }
 
 type UpdateBucketPolicyMessage struct {
+	UserID     string `json:"user_id"`
+	BucketName string `json:"bucket_name"`
+	Timestamp  int64  `json:"timestamp"`
+}
+
+type DeleteBucketMessage struct {
 	UserID     string `json:"user_id"`
 	BucketName string `json:"bucket_name"`
 	Timestamp  int64  `json:"timestamp"`
@@ -68,6 +77,31 @@ func InitBucketService(channel *amqp.Channel) *BucketService {
 		panic("Failed to bind Bucket update policy queue: " + err.Error())
 	}
 
+	// Declare delete bucket queue
+	_, err = channel.QueueDeclare(
+		BucketDeleteQueue,
+		true,  // durable
+		false, // auto-delete
+		false, // exclusive
+		false, // no-wait
+		nil,
+	)
+	if err != nil {
+		panic("Failed to declare Bucket delete queue: " + err.Error())
+	}
+
+	// Bind delete bucket queue to exchange
+	err = channel.QueueBind(
+		BucketDeleteQueue,
+		BucketDeleteRoutingKey,
+		BucketUpdatePolicyExchange,
+		false,
+		nil,
+	)
+	if err != nil {
+		panic("Failed to bind Bucket delete queue: " + err.Error())
+	}
+
 	return service
 }
 
@@ -87,6 +121,32 @@ func (s *BucketService) PublishUpdateBucketPolicy(ctx context.Context, userID, b
 		ctx,
 		BucketUpdatePolicyExchange,
 		BucketUpdatePolicyRoutingKey,
+		false,
+		false,
+		amqp.Publishing{
+			ContentType:  "application/json",
+			Body:         body,
+			DeliveryMode: amqp.Persistent,
+		},
+	)
+}
+
+func (s *BucketService) PublishDeleteBucket(ctx context.Context, userID, bucketName string) error {
+	message := DeleteBucketMessage{
+		UserID:     userID,
+		BucketName: bucketName,
+		Timestamp:  time.Now().Unix(),
+	}
+
+	body, err := json.Marshal(message)
+	if err != nil {
+		return err
+	}
+
+	return s.channel.PublishWithContext(
+		ctx,
+		BucketUpdatePolicyExchange,
+		BucketDeleteRoutingKey,
 		false,
 		false,
 		amqp.Publishing{
