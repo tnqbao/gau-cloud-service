@@ -165,3 +165,33 @@ func (ctrl *Controller) DeleteBucketByID(c *gin.Context) {
 		"message": "Bucket deletion initiated successfully",
 	})
 }
+
+func (ctrl *Controller) ListBuckets(c *gin.Context) {
+	ctx := c.Request.Context()
+	userIDStr := c.GetString("user_id")
+	if userIDStr == "" {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, nil, "[Bucket] user_id not found in context")
+		utils.JSON401(c, "Unauthorized: user_id not found")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Invalid user_id format: %v", err)
+		utils.JSON400(c, "Invalid user_id format")
+		return
+	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Bucket] Listing buckets for user_id: %s", userID)
+	buckets, err := ctrl.Repository.BucketRepo.FindByOwnerID(userID)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Failed to list buckets: %v", err)
+		utils.JSON500(c, "Failed to list buckets")
+		return
+	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Bucket] Successfully listed %d buckets for user_id: %s", len(buckets), userID)
+	utils.JSON200(c, gin.H{
+		"buckets": buckets,
+	})
+}
