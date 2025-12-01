@@ -30,7 +30,7 @@ func SetupRouter(ctrl *controller.Controller) *gin.Engine {
 		{
 			bucketRoutes.POST("/", ctrl.CreateBucket)
 			//bucketRoutes.GET("/", ctrl.ListBuckets)
-			//bucketRoutes.DELETE("/:id", ctrl.DeleteBucketByID)
+			bucketRoutes.DELETE("/:id", ctrl.DeleteBucketByID)
 		}
 
 	}

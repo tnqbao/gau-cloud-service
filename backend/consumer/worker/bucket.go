@@ -41,6 +41,10 @@ func (c *BucketConsumer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to start bucket update policy consumer: %w", err)
 	}
 
+	if err := c.startDeleteBucketConsumer(ctx); err != nil {
+		return fmt.Errorf("failed to start bucket delete consumer: %w", err)
+	}
+
 	return nil
 }
 
@@ -230,6 +234,237 @@ func (c *BucketConsumer) updateIAMUserPolicy(ctx context.Context, iamUser *entit
 	}
 
 	c.infra.Logger.InfoWithContextf(ctx, "[Bucket Consumer - Update Policy] Successfully updated policy for IAM user %s with bucket %s", MaskAccessKey(iamUser.AccessKey), bucketName)
+
+	return nil
+}
+
+func (c *BucketConsumer) startDeleteBucketConsumer(ctx context.Context) error {
+	msgs, err := c.channel.Consume(
+		produce.BucketDeleteQueue,
+		"",
+		false,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to register bucket delete consumer: %w", err)
+	}
+
+	c.infra.Logger.InfoWithContextf(ctx, "[Bucket Consumer] Started listening for delete bucket jobs on queue: %s", produce.BucketDeleteQueue)
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				c.infra.Logger.InfoWithContextf(ctx, "[Bucket Consumer - Delete] Shutting down...")
+				return
+			case msg, ok := <-msgs:
+				if !ok {
+					c.infra.Logger.WarningWithContextf(ctx, "[Bucket Consumer - Delete] Channel closed")
+					return
+				}
+				c.handleDeleteBucket(ctx, msg)
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (c *BucketConsumer) handleDeleteBucket(ctx context.Context, msg amqp.Delivery) {
+	c.infra.Logger.InfoWithContextf(ctx, "[Bucket Consumer - Delete] Received message: %s", string(msg.Body))
+
+	var payload produce.DeleteBucketMessage
+	if err := json.Unmarshal(msg.Body, &payload); err != nil {
+		c.infra.Logger.ErrorWithContextf(ctx, err, "[Bucket Consumer - Delete] Failed to unmarshal message: %v", err)
+		_ = msg.Nack(false, false)
+		return
+	}
+
+	userID, err := uuid.Parse(payload.UserID)
+	if err != nil {
+		c.infra.Logger.ErrorWithContextf(ctx, err, "[Bucket Consumer - Delete] Invalid User ID: %v", err)
+		_ = msg.Nack(false, false)
+		return
+	}
+
+	maxRetries := 3
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		err = c.executeDeleteBucket(ctx, userID, payload.BucketName)
+		if err == nil {
+			c.infra.Logger.InfoWithContextf(ctx, "[Bucket Consumer - Delete] Successfully deleted bucket from MinIO and updated policies for user ID: %s, bucket: %s", userID.String(), payload.BucketName)
+			_ = msg.Ack(false)
+			return
+		}
+
+		c.infra.Logger.ErrorWithContextf(ctx, err, "[Bucket Consumer - Delete] Attempt %d/%d failed: %v", attempt, maxRetries, err)
+
+		if attempt < maxRetries {
+			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+		}
+	}
+
+	// After max retries, reject and requeue
+	c.infra.Logger.ErrorWithContextf(ctx, err, "[Bucket Consumer - Delete] Failed after %d attempts, requeueing message", maxRetries)
+	_ = msg.Nack(false, true)
+}
+
+func (c *BucketConsumer) executeDeleteBucket(ctx context.Context, userID uuid.UUID, bucketName string) error {
+	// Step 1: Remove all objects from bucket and delete bucket from MinIO
+	c.infra.Logger.InfoWithContextf(ctx, "[Bucket Consumer - Delete] Removing all objects from bucket: %s", bucketName)
+
+	err := c.infra.Minio.RemoveAllObjectsFromBucket(ctx, bucketName)
+	if err != nil {
+		return fmt.Errorf("failed to remove objects from bucket %s: %w", bucketName, err)
+	}
+
+	c.infra.Logger.InfoWithContextf(ctx, "[Bucket Consumer - Delete] All objects removed from bucket: %s", bucketName)
+
+	// Step 2: Delete the bucket
+	c.infra.Logger.InfoWithContextf(ctx, "[Bucket Consumer - Delete] Deleting bucket from MinIO: %s", bucketName)
+
+	err = c.infra.Minio.DeleteBucket(ctx, bucketName)
+	if err != nil {
+		return fmt.Errorf("failed to delete bucket %s from MinIO: %w", bucketName, err)
+	}
+
+	c.infra.Logger.InfoWithContextf(ctx, "[Bucket Consumer - Delete] Bucket deleted from MinIO: %s", bucketName)
+
+	// Step 3: Remove bucket from all IAM user policies
+	c.infra.Logger.InfoWithContextf(ctx, "[Bucket Consumer - Delete] Removing bucket from IAM policies for user_id: %s", userID.String())
+
+	err = c.removeBucketFromPolicies(ctx, userID, bucketName)
+	if err != nil {
+		// Don't fail the entire operation if policy update fails
+		// The bucket is already deleted from MinIO
+		c.infra.Logger.ErrorWithContextf(ctx, err, "[Bucket Consumer - Delete] Failed to update policies (bucket already deleted from MinIO): %v", err)
+	} else {
+		c.infra.Logger.InfoWithContextf(ctx, "[Bucket Consumer - Delete] Successfully updated IAM policies")
+	}
+
+	return nil
+}
+
+func (c *BucketConsumer) removeBucketFromPolicies(ctx context.Context, userID uuid.UUID, bucketName string) error {
+	// Get all IAM users for this user_id
+	iamUsers, err := c.repository.IAMUserRepo.GetByUserID(userID)
+	if err != nil {
+		return fmt.Errorf("failed to get IAM users for user_id %s: %w", userID.String(), err)
+	}
+
+	if len(iamUsers) == 0 {
+		c.infra.Logger.InfoWithContextf(ctx, "[Bucket Consumer - Delete] No IAM users found for user_id: %s", userID.String())
+		return nil
+	}
+
+	c.infra.Logger.InfoWithContextf(ctx, "[Bucket Consumer - Delete] Found %d IAM users for user_id: %s", len(iamUsers), userID.String())
+
+	// For each IAM user, get their policy and remove the bucket from it
+	for _, iamUser := range iamUsers {
+		if err := c.removeIAMUserBucket(ctx, &iamUser, bucketName); err != nil {
+			c.infra.Logger.ErrorWithContextf(ctx, err, "[Bucket Consumer - Delete] Failed to remove bucket from policy for IAM user %s: %v", MaskAccessKey(iamUser.AccessKey), err)
+			// Continue with other IAM users even if one fails
+			continue
+		}
+		c.infra.Logger.InfoWithContextf(ctx, "[Bucket Consumer - Delete] Successfully removed bucket from policy for IAM user: %s", MaskAccessKey(iamUser.AccessKey))
+	}
+
+	return nil
+}
+
+func (c *BucketConsumer) removeIAMUserBucket(ctx context.Context, iamUser *entity.IAMUser, bucketName string) error {
+	// Step 1: Get current policy from database (type "s3")
+	policy, err := c.repository.IAMPolicyRepo.GetByIAMIDAndType(iamUser.ID, "s3")
+	if err != nil {
+		return fmt.Errorf("failed to get s3 policy for IAM ID %s: %w", iamUser.ID.String(), err)
+	}
+
+	// Step 2: Parse the current policy JSON
+	var policyDoc map[string]interface{}
+	if err := json.Unmarshal(policy.Policy, &policyDoc); err != nil {
+		return fmt.Errorf("failed to unmarshal policy JSON: %w", err)
+	}
+
+	// Step 3: Remove the bucket from the policy
+	statements, ok := policyDoc["Statement"].([]interface{})
+	if !ok {
+		return fmt.Errorf("policy Statement is not an array")
+	}
+
+	// Remove bucket ARN from all statements with Resource field
+	bucketARN := fmt.Sprintf("arn:aws:s3:::%s", bucketName)
+	bucketObjectARN := fmt.Sprintf("arn:aws:s3:::%s/*", bucketName)
+
+	modified := false
+	for i, stmt := range statements {
+		statement, ok := stmt.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		resources, ok := statement["Resource"].([]interface{})
+		if !ok {
+			continue
+		}
+
+		// Filter out the bucket ARNs
+		newResources := []interface{}{}
+		for _, res := range resources {
+			if resStr, ok := res.(string); ok {
+				if resStr != bucketARN && resStr != bucketObjectARN {
+					newResources = append(newResources, res)
+				} else {
+					modified = true
+				}
+			}
+		}
+
+		if modified {
+			statement["Resource"] = newResources
+			statements[i] = statement
+		}
+	}
+
+	if !modified {
+		c.infra.Logger.InfoWithContextf(ctx, "[Bucket Consumer - Delete] Bucket %s not found in policy for IAM user %s, skipping", bucketName, MaskAccessKey(iamUser.AccessKey))
+		return nil
+	}
+
+	policyDoc["Statement"] = statements
+
+	// Step 4: Marshal updated policy
+	updatedPolicyJSON, err := json.Marshal(policyDoc)
+	if err != nil {
+		return fmt.Errorf("failed to marshal updated policy: %w", err)
+	}
+
+	// Step 5: Update policy on MinIO
+	policyName := iamUser.AccessKey + "-s3-policy"
+
+	// Delete old policy
+	if err := c.infra.Minio.DeletePolicy(ctx, policyName); err != nil {
+		c.infra.Logger.WarningWithContextf(ctx, "[Bucket Consumer - Delete] Failed to delete old policy (may not exist): %v", err)
+	}
+
+	// Create new policy with updated resources
+	if err := c.infra.Minio.AddCannedPolicy(ctx, policyName, updatedPolicyJSON); err != nil {
+		return fmt.Errorf("failed to create updated policy on MinIO: %w", err)
+	}
+
+	// Attach policy to user (reattach to ensure it's applied)
+	if err := c.infra.Minio.AttachPolicyToUser(ctx, iamUser.AccessKey, policyName); err != nil {
+		return fmt.Errorf("failed to attach updated policy to user: %w", err)
+	}
+
+	// Step 6: Update policy in database
+	policy.Policy = updatedPolicyJSON
+	if err := c.repository.IAMPolicyRepo.Update(policy); err != nil {
+		return fmt.Errorf("failed to update policy in database: %w", err)
+	}
+
+	c.infra.Logger.InfoWithContextf(ctx, "[Bucket Consumer - Delete] Successfully removed bucket %s from policy for IAM user %s", bucketName, MaskAccessKey(iamUser.AccessKey))
 
 	return nil
 }

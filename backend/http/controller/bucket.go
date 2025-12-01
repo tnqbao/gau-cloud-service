@@ -94,3 +94,74 @@ func (ctrl *Controller) CreateBucket(c *gin.Context) {
 		"bucket":  bucket,
 	})
 }
+
+func (ctrl *Controller) DeleteBucketByID(c *gin.Context) {
+	ctx := c.Request.Context()
+	userIDStr := c.GetString("user_id")
+	if userIDStr == "" {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, nil, "[Bucket] user_id not found in context")
+		utils.JSON401(c, "Unauthorized: user_id not found")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Invalid user_id format: %v", err)
+		utils.JSON400(c, "Invalid user_id format")
+		return
+	}
+
+	bucketIDStr := c.Param("id")
+	if bucketIDStr == "" {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, nil, "[Bucket] bucket_id not provided in path")
+		utils.JSON400(c, "bucket_id is required")
+		return
+	}
+
+	bucketID, err := uuid.Parse(bucketIDStr)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Invalid bucket_id format: %v", err)
+		utils.JSON400(c, "Invalid bucket id format")
+		return
+	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Bucket] Deleting bucket with ID: %s for user_id: %s", bucketID, userID)
+
+	bucket, err := ctrl.Repository.BucketRepo.FindByID(bucketID)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Failed to retrieve bucket: %v", err)
+		utils.JSON404(c, "Bucket not found")
+		return
+	}
+
+	// Check if the user owns this bucket
+	if bucket.OwnerID != userID {
+		ctrl.Infra.Logger.WarningWithContextf(ctx, "[Bucket] User %s attempted to delete bucket %s owned by %s", userID, bucketID, bucket.OwnerID)
+		utils.JSON403(c, "Forbidden: you don't have permission to delete this bucket")
+		return
+	}
+
+	// Delete bucket from database first
+	err = ctrl.Repository.BucketRepo.Delete(bucketID)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Failed to delete bucket from database: %v", err)
+		utils.JSON500(c, "Failed to delete bucket from database")
+		return
+	}
+
+	// Publish message to delete bucket from MinIO and update IAM policies
+	// Consumer will handle: 1) Remove all objects, 2) Delete bucket, 3) Update policies
+	err = ctrl.Infra.Produce.BucketService.PublishDeleteBucket(ctx, userID.String(), bucket.Name)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Failed to publish delete bucket message: %v", err)
+		// Don't fail the request, just log the error
+		// The bucket record is deleted from DB, MinIO cleanup will happen when consumer processes the message
+	} else {
+		ctrl.Infra.Logger.InfoWithContextf(ctx, "[Bucket] Published delete bucket message for bucket: %s", bucket.Name)
+	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Bucket] Successfully deleted bucket record: %s", bucketID)
+	utils.JSON200(c, gin.H{
+		"message": "Bucket deletion initiated successfully",
+	})
+}
