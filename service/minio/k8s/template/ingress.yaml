@@ -33,7 +33,7 @@ spec:
                 port:
                   number: 9001
 
-    - host: "~^([a-z0-9-]+)\.${API_DOMAIN}$"
+    - host: "*.s3.gauas.online"
       http:
         paths:
           - path: /
