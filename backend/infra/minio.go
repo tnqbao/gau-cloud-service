@@ -350,3 +350,67 @@ func (m *MinioClient) BucketExists(ctx context.Context, bucketName string) (bool
 
 	return exists, nil
 }
+
+// SetBucketPolicy sets the access policy for a bucket (public or private)
+func (m *MinioClient) SetBucketPolicy(ctx context.Context, bucketName, policy string) error {
+	if bucketName == "" {
+		return fmt.Errorf("bucketName cannot be empty")
+	}
+
+	var policyJSON string
+
+	switch policy {
+	case "public":
+		// Public read policy - allows anonymous read access
+		policyJSON = fmt.Sprintf(`{
+			"Version": "2012-10-17",
+			"Statement": [
+				{
+					"Effect": "Allow",
+					"Principal": {"AWS": ["*"]},
+					"Action": ["s3:GetObject"],
+					"Resource": ["arn:aws:s3:::%s/*"]
+				},
+				{
+					"Effect": "Allow",
+					"Principal": {"AWS": ["*"]},
+					"Action": ["s3:ListBucket"],
+					"Resource": ["arn:aws:s3:::%s"]
+				}
+			]
+		}`, bucketName, bucketName)
+	case "private":
+		// Private policy - no anonymous access (empty policy)
+		policyJSON = ""
+	default:
+		return fmt.Errorf("invalid policy: %s. Must be 'public' or 'private'", policy)
+	}
+
+	err := m.Client.SetBucketPolicy(ctx, bucketName, policyJSON)
+	if err != nil {
+		return fmt.Errorf("failed to set bucket policy: %w", err)
+	}
+
+	return nil
+}
+
+// GetBucketPolicy retrieves the current access policy for a bucket
+func (m *MinioClient) GetBucketPolicy(ctx context.Context, bucketName string) (string, error) {
+	if bucketName == "" {
+		return "", fmt.Errorf("bucketName cannot be empty")
+	}
+
+	policyJSON, err := m.Client.GetBucketPolicy(ctx, bucketName)
+	if err != nil {
+		// If no policy is set, it's private
+		return "private", nil
+	}
+
+	if policyJSON == "" {
+		return "private", nil
+	}
+
+	// Simple check - if policy allows public access, it's public
+	// A more sophisticated check could parse the JSON
+	return "public", nil
+}
