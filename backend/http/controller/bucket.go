@@ -195,3 +195,149 @@ func (ctrl *Controller) ListBuckets(c *gin.Context) {
 		"buckets": buckets,
 	})
 }
+
+func (ctrl *Controller) UpdateBucketAccess(c *gin.Context) {
+	ctx := c.Request.Context()
+	userIDStr := c.GetString("user_id")
+	if userIDStr == "" {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, nil, "[Bucket] user_id not found in context")
+		utils.JSON401(c, "Unauthorized: user_id not found")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Invalid user_id format: %v", err)
+		utils.JSON400(c, "Invalid user_id format")
+		return
+	}
+
+	bucketIDStr := c.Param("id")
+	if bucketIDStr == "" {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, nil, "[Bucket] bucket_id not provided in path")
+		utils.JSON400(c, "bucket_id is required")
+		return
+	}
+
+	bucketID, err := uuid.Parse(bucketIDStr)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Invalid bucket_id format: %v", err)
+		utils.JSON400(c, "Invalid bucket id format")
+		return
+	}
+
+	var req dto.UpdateBucketAccessRequestDTO
+	if err := c.ShouldBindJSON(&req); err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Failed to bind JSON: %v", err)
+		utils.JSON400(c, "Invalid request payload. Access must be 'public' or 'private'")
+		return
+	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Bucket] Updating bucket %s access to %s for user_id: %s", bucketID, req.Access, userID)
+
+	// Get bucket from database
+	bucket, err := ctrl.Repository.BucketRepo.FindByID(bucketID)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Failed to retrieve bucket: %v", err)
+		utils.JSON404(c, "Bucket not found")
+		return
+	}
+
+	// Check if the user owns this bucket
+	if bucket.OwnerID != userID {
+		ctrl.Infra.Logger.WarningWithContextf(ctx, "[Bucket] User %s attempted to update bucket %s owned by %s", userID, bucketID, bucket.OwnerID)
+		utils.JSON403(c, "Forbidden: you don't have permission to modify this bucket")
+		return
+	}
+
+	// Check if bucket exists in MinIO
+	exists, err := ctrl.Infra.Minio.BucketExists(ctx, bucket.Name)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Failed to check bucket existence: %v", err)
+		utils.JSON500(c, "Failed to check bucket existence")
+		return
+	}
+
+	if !exists {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, nil, "[Bucket] Bucket %s does not exist in MinIO", bucket.Name)
+		utils.JSON404(c, "Bucket does not exist in storage")
+		return
+	}
+
+	// Update bucket access policy in MinIO
+	err = ctrl.Infra.Minio.SetBucketPolicy(ctx, bucket.Name, req.Access)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Failed to update bucket access policy: %v", err)
+		utils.JSON500(c, "Failed to update bucket access policy")
+		return
+	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Bucket] Successfully updated bucket %s access to %s", bucket.Name, req.Access)
+	utils.JSON200(c, gin.H{
+		"message": "Bucket access updated successfully",
+		"bucket":  bucket.Name,
+		"access":  req.Access,
+	})
+}
+
+func (ctrl *Controller) GetBucketAccess(c *gin.Context) {
+	ctx := c.Request.Context()
+	userIDStr := c.GetString("user_id")
+	if userIDStr == "" {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, nil, "[Bucket] user_id not found in context")
+		utils.JSON401(c, "Unauthorized: user_id not found")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Invalid user_id format: %v", err)
+		utils.JSON400(c, "Invalid user_id format")
+		return
+	}
+
+	bucketIDStr := c.Param("id")
+	if bucketIDStr == "" {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, nil, "[Bucket] bucket_id not provided in path")
+		utils.JSON400(c, "bucket_id is required")
+		return
+	}
+
+	bucketID, err := uuid.Parse(bucketIDStr)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Invalid bucket_id format: %v", err)
+		utils.JSON400(c, "Invalid bucket id format")
+		return
+	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Bucket] Getting bucket %s access for user_id: %s", bucketID, userID)
+
+	// Get bucket from database
+	bucket, err := ctrl.Repository.BucketRepo.FindByID(bucketID)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Failed to retrieve bucket: %v", err)
+		utils.JSON404(c, "Bucket not found")
+		return
+	}
+
+	// Check if the user owns this bucket
+	if bucket.OwnerID != userID {
+		ctrl.Infra.Logger.WarningWithContextf(ctx, "[Bucket] User %s attempted to get bucket %s access owned by %s", userID, bucketID, bucket.OwnerID)
+		utils.JSON403(c, "Forbidden: you don't have permission to view this bucket")
+		return
+	}
+
+	// Get bucket access policy from MinIO
+	access, err := ctrl.Infra.Minio.GetBucketPolicy(ctx, bucket.Name)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Failed to get bucket access policy: %v", err)
+		utils.JSON500(c, "Failed to get bucket access policy")
+		return
+	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Bucket] Successfully retrieved bucket %s access: %s", bucket.Name, access)
+	utils.JSON200(c, gin.H{
+		"bucket": bucket.Name,
+		"access": access,
+	})
+}
