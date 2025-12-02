@@ -22,14 +22,14 @@ func SetupRouter(ctrl *controller.Controller) *gin.Engine {
 			aimRoutes.POST("/", ctrl.CreateIAM)
 			aimRoutes.GET("/", ctrl.ListIAMs)
 			aimRoutes.DELETE("/:id", ctrl.DeleteIAMByID)
-			aimRoutes.PUT("/:id", ctrl.UpdateIAMByID)
-			aimRoutes.PUT("/credentials/update", ctrl.UpdateIAMCredentials)
+			aimRoutes.PUT("/:id", ctrl.UpdateIAMCredentials)
+			//aimRoutes.PUT("/credentials/update", ctrl.UpdateIAMCredentials)
 		}
 
 		bucketRoutes := apiRoutes.Group("/buckets")
 		{
 			bucketRoutes.POST("/", ctrl.CreateBucket)
-			//bucketRoutes.GET("/", ctrl.ListBuckets)
+			bucketRoutes.GET("/", ctrl.ListBuckets)
 			bucketRoutes.DELETE("/:id", ctrl.DeleteBucketByID)
 		}
 
