@@ -1,4 +1,4 @@
-name: build-and-deploy-staging
+name: deploy-localstack
 
 on:
   push:
@@ -30,25 +30,25 @@ jobs:
 
       - name: Download .env from server
         run: |
-          sshpass -p "${{ secrets.SERVER_PASSWORD }}" scp -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:/home/tnqbao/.enviroment/gau-cloud-orchestrator/localstack.env ./localstack/k8s/.env
+          sshpass -p "${{ secrets.SERVER_PASSWORD }}" scp -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:/home/tnqbao/.enviroment/gau-cloud-orchestrator/localstack.env ./service/localstack/k8s/.env
 
       - name: Download kubeconfig.yaml from server
         run: |
           mkdir -p ./deploy/k8s/staging
-          sshpass -p "${{ secrets.SERVER_PASSWORD }}" scp -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:~/.secret/k8s/kubeconfig.yaml ./localstack/k8s/kubeconfig.yaml
+          sshpass -p "${{ secrets.SERVER_PASSWORD }}" scp -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:~/.secret/k8s/kubeconfig.yaml ./service/localstack/k8s/kubeconfig.yaml
 
       - name: Set KUBECONFIG environment variable
-        run: echo "KUBECONFIG=$GITHUB_WORKSPACE/localstack/k8s/kubeconfig.yaml" >> $GITHUB_ENV
+        run: echo "KUBECONFIG=$GITHUB_WORKSPACE/service/localstack/k8s/kubeconfig.yaml" >> $GITHUB_ENV
 
       - name: Check Kubernetes access
         run: kubectl get nodes
 
       - name: Make scripts executable
         run: |
-          chmod +x ./localstack/k8s/apply.sh
+          chmod +x ./service/localstack/k8s/apply.sh
 
       - name: Apply manifests to Kubernetes
-        working-directory: ./localstack/k8s/
+        working-directory: ./service/localstack/k8s/
         run: ./apply.sh
 
       - name: Check active pods
