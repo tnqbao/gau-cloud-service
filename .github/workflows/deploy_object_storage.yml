@@ -1,9 +1,9 @@
-name: deploy_minio.yml
+name: deploy_bucket_storage.yml
 
 on:
   push:
     branches:
-      - deploy/minio
+      - deploy/bucket-storage
 
 jobs:
   deploy:
@@ -30,25 +30,26 @@ jobs:
 
       - name: Download .env from server
         run: |
-          sshpass -p "${{ secrets.SERVER_PASSWORD }}" scp -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:/home/tnqbao/.enviroment/gau-cloud-orchestrator/minio.env ./service/minio/k8s/.env
+          sshpass -p "${{ secrets.SERVER_PASSWORD }}" scp -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:/home/tnqbao/.enviroment/gau-cloud-orchestrator/garage.env ./service/garage/k8s/.env
 
       - name: Download kubeconfig.yaml from server
         run: |
-          mkdir -p ./deploy/k8s/staging
-          sshpass -p "${{ secrets.SERVER_PASSWORD }}" scp -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:~/.secret/k8s/kubeconfig.yaml ./service/minio/k8s/kubeconfig.yaml
+          mkdir -p ./service/garage/k8s
+          sshpass -p "${{ secrets.SERVER_PASSWORD }}" scp -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:~/.secret/k8s/kubeconfig.yaml ./service/garage/k8s/kubeconfig.yaml
 
       - name: Set KUBECONFIG environment variable
-        run: echo "KUBECONFIG=$GITHUB_WORKSPACE/service/minio/k8s/kubeconfig.yaml" >> $GITHUB_ENV
+        run: echo "KUBECONFIG=$GITHUB_WORKSPACE/service/garage/k8s/kubeconfig.yaml" >> $GITHUB_ENV
 
       - name: Check Kubernetes access
         run: kubectl get nodes
 
       - name: Make scripts executable
         run: |
-          chmod +x ./service/minio/k8s/apply.sh
+          chmod +x ./service/garage/k8s/apply.sh
+          chmod +x ./service/garage/k8s/apply_envsubst.sh
 
       - name: Apply manifests to Kubernetes
-        working-directory: ./service/minio/k8s/
+        working-directory: ./service/garage/k8s/
         run: ./apply.sh
 
       - name: Check active pods
@@ -56,7 +57,6 @@ jobs:
 
       - name: Restart pods
         run: |
-          kubectl rollout restart deployment gau-minio-deployment -n bao-staging-env
+          kubectl rollout restart deployment gau-garage-deployment -n bao-staging-env
           sleep 10
           kubectl get pods -n bao-staging-env
-

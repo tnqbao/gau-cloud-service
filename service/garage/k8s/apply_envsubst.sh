@@ -13,3 +13,4 @@ for file in "$TEMPLATE_DIR"/*; do
     envsubst < "$file" > "$OUTPUT_DIR/$filename"
     echo "Processed $file -> $OUTPUT_DIR/$filename"
 done
+
