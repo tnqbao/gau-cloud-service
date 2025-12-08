@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gau-garage-ingress
+  namespace: bao-${DEPLOY_ENV}-env
+  labels:
+    app: bao-platform
+    env: ${DEPLOY_ENV}
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.headers.customrequestheaders.X-Forwarded-Proto: https
+spec:
+  rules:
+    - host: "${API_DOMAIN}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gau-garage-service
+                port:
+                  number: 3900
+
+    - host: "${S3_WEB_DOMAIN}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gau-garage-service
+                port:
+                  number: 3902
