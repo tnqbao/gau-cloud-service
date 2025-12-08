@@ -11,7 +11,7 @@ metadata:
     traefik.ingress.kubernetes.io/router.headers.customrequestheaders.X-Forwarded-Proto: https
 spec:
   rules:
-    - host: "${API_DOMAIN}"
+    - host: "${S3_API_DOMAIN}"
       http:
         paths:
           - path: /

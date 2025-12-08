@@ -18,7 +18,7 @@ data:
     [s3_api]
     s3_region = "garage"
     api_bind_addr = "[::]:3900"
-    root_domain = ".${S3_BUCKET_DOMAIN}"
+    root_domain = ".${S3_API_DOMAIN}"
 
     [s3_web]
     bind_addr = "[::]:3902"
