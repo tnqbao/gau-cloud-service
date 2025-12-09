@@ -1,0 +1,179 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gau-garage-bootstrap
+  namespace: bao-staging-env
+  labels:
+    app: bao-platform
+    env: staging
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          image: badouralix/curl-jq:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "=== Garage Bootstrap Job ==="
+
+              ADMIN_URL="http://gau-garage-service:3903"
+              TOKEN="Qu_bao1604_tK"
+
+              echo "Config: ADMIN_URL=$ADMIN_URL"
+
+              echo "Waiting for Garage Admin API..."
+              i=0
+              while true; do
+                i=$((i + 1))
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$ADMIN_URL/v1/status" -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo "000")
+                if [ "$HTTP_CODE" = "200" ]; then
+                  echo "Garage Admin API is ready! (HTTP $HTTP_CODE)"
+                  break
+                fi
+                if [ "$i" -gt 60 ]; then
+                  echo "ERROR: Garage Admin API not ready after 60 attempts (last HTTP: $HTTP_CODE)"
+                  exit 1
+                fi
+                echo "Attempt $i/60 - HTTP $HTTP_CODE - waiting..."
+                sleep 3
+              done
+
+              # Lấy node ID
+              echo "=== Getting node ID ==="
+              STATUS=$(curl -s "$ADMIN_URL/v1/status" -H "Authorization: Bearer $TOKEN")
+              NODE_ID=$(echo "$STATUS" | jq -r .node)
+              echo "Node: $NODE_ID"
+
+              if [ -z "$NODE_ID" ] || [ "$NODE_ID" = "null" ]; then
+                echo "ERROR: Cannot get node ID"
+                exit 1
+              fi
+
+              # Kiểm tra layout hiện tại
+              echo "=== Checking current layout ==="
+              LAYOUT=$(curl -s "$ADMIN_URL/v1/layout" -H "Authorization: Bearer $TOKEN")
+              echo "Current layout:"
+              echo "$LAYOUT" | jq .
+              
+              LAYOUT_VERSION=$(echo "$LAYOUT" | jq -r .version)
+              echo "Layout version: $LAYOUT_VERSION"
+
+              # Nếu layout version = 0, cần thêm node và apply
+              if [ "$LAYOUT_VERSION" = "0" ]; then
+                echo "Layout version is 0, need to add node..."
+                
+                # Thêm node vào layout - FORMAT ARRAY cho Garage v1.0
+                echo "Adding node $NODE_ID to layout..."
+                ADD_RESULT=$(curl -sX POST "$ADMIN_URL/v1/layout" \
+                  -H "Authorization: Bearer $TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d "[{\"id\": \"$NODE_ID\", \"zone\": \"dc1\", \"capacity\": 107374182400, \"tags\": []}]")
+                echo "Add result: $ADD_RESULT"
+
+                sleep 2
+
+                # Kiểm tra staged changes
+                LAYOUT_AFTER=$(curl -s "$ADMIN_URL/v1/layout" -H "Authorization: Bearer $TOKEN")
+                echo "Layout after add:"
+                echo "$LAYOUT_AFTER" | jq .
+
+                # Apply layout version 1
+                echo "Applying layout version 1..."
+                APPLY_RESULT=$(curl -sX POST "$ADMIN_URL/v1/layout/apply" \
+                  -H "Authorization: Bearer $TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d '{"version": 1}')
+                echo "Apply result: $APPLY_RESULT"
+
+                echo "Waiting for layout to propagate..."
+                sleep 10
+              else
+                echo "Layout already configured (version $LAYOUT_VERSION)"
+              fi
+
+              # Verify layout
+              echo "=== Verifying layout ==="
+              FINAL_LAYOUT=$(curl -s "$ADMIN_URL/v1/layout" -H "Authorization: Bearer $TOKEN")
+              FINAL_VERSION=$(echo "$FINAL_LAYOUT" | jq -r .version)
+              echo "Final layout version: $FINAL_VERSION"
+
+              if [ "$FINAL_VERSION" = "0" ]; then
+                echo "WARNING: Layout still at version 0, retrying..."
+                exit 1
+              fi
+
+              # Tạo key mới
+              echo "=== Creating access key ==="
+              EXISTING_KEYS=$(curl -s "$ADMIN_URL/v1/key" -H "Authorization: Bearer $TOKEN")
+              echo "Existing keys: $EXISTING_KEYS"
+              
+              ADMIN_KEY_EXISTS=$(echo "$EXISTING_KEYS" | jq -r '.[] | select(.name == "admin") | .id' 2>/dev/null || echo "")
+              
+              if [ -n "$ADMIN_KEY_EXISTS" ]; then
+                echo "Admin key already exists: $ADMIN_KEY_EXISTS"
+                KEY_ID="$ADMIN_KEY_EXISTS"
+              else
+                echo "Creating new admin key..."
+                NEW_KEY=$(curl -sX POST "$ADMIN_URL/v1/key" \
+                  -H "Authorization: Bearer $TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d '{"name":"admin"}')
+                echo "New key result: $NEW_KEY"
+                KEY_ID=$(echo "$NEW_KEY" | jq -r .accessKeyId)
+                SECRET_KEY=$(echo "$NEW_KEY" | jq -r .secretAccessKey)
+                echo ""
+                echo "================================================"
+                echo "NEW CREDENTIALS - SAVE THESE!"
+                echo "ACCESS_KEY_ID: $KEY_ID"
+                echo "SECRET_ACCESS_KEY: $SECRET_KEY"
+                echo "================================================"
+                echo ""
+              fi
+
+              # Tạo bucket
+              echo "=== Creating bucket ==="
+              BUCKET_CHECK=$(curl -s "$ADMIN_URL/v1/bucket?globalAlias=gau-storage" -H "Authorization: Bearer $TOKEN")
+              
+              if echo "$BUCKET_CHECK" | jq -e '.id' >/dev/null 2>&1; then
+                echo "Bucket 'gau-storage' already exists"
+              else
+                echo "Creating bucket 'gau-storage'..."
+                BUCKET_RESULT=$(curl -sX POST "$ADMIN_URL/v1/bucket" \
+                  -H "Authorization: Bearer $TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d '{"globalAliases":["gau-storage"]}')
+                echo "Bucket result: $BUCKET_RESULT"
+                BID=$(echo "$BUCKET_RESULT" | jq -r .id)
+
+                if [ -n "$BID" ] && [ "$BID" != "null" ]; then
+                  echo "Granting permissions to key $KEY_ID..."
+                  PERM_RESULT=$(curl -sX POST "$ADMIN_URL/v1/bucket/allow" \
+                    -H "Authorization: Bearer $TOKEN" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"bucketId\":\"$BID\",\"accessKeyId\":\"$KEY_ID\",\"permissions\":{\"read\":true,\"write\":true,\"owner\":true}}")
+                  echo "Permission result: $PERM_RESULT"
+                fi
+              fi
+
+              echo ""
+              echo "=========================================="
+              echo "Garage bootstrap completed!"
+              echo "=========================================="
+          env:
+            - name: GARAGE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gau-garage-staging-secret
+                  key: GARAGE_ADMIN_TOKEN
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"

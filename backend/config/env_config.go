@@ -36,6 +36,12 @@ type EnvConfig struct {
 		Username string
 		Password string
 	}
+	Garage struct {
+		Endpoint     string
+		RootUser     string
+		RootPassword string
+		AdminToken   string
+	}
 	Minio struct {
 		Endpoint     string
 		RootUser     string
@@ -108,9 +114,37 @@ func LoadEnvConfig() *EnvConfig {
 		config.RabbitMQ.Password = "guest"
 	}
 
+	// Garage configuration (new)
+	config.Garage.Endpoint = os.Getenv("GARAGE_ENDPOINT")
+	if config.Garage.Endpoint == "" {
+		config.Garage.Endpoint = os.Getenv("MINIO_ENDPOINT") // Fallback to MINIO_ENDPOINT for compatibility
+	}
+	config.Garage.RootUser = os.Getenv("GARAGE_ROOT_USER")
+	if config.Garage.RootUser == "" {
+		config.Garage.RootUser = os.Getenv("MINIO_ROOT_USER") // Fallback
+	}
+	config.Garage.RootPassword = os.Getenv("GARAGE_ROOT_PASSWORD")
+	if config.Garage.RootPassword == "" {
+		config.Garage.RootPassword = os.Getenv("MINIO_ROOT_PASSWORD") // Fallback
+	}
+	config.Garage.AdminToken = os.Getenv("GARAGE_ADMIN_TOKEN")
+	if config.Garage.AdminToken == "" {
+		config.Garage.AdminToken = os.Getenv("GARAGE_RPC_SECRET") // Use RPC secret as admin token
+	}
+
+	// MinIO configuration (kept for backward compatibility, but now used by Garage)
 	config.Minio.Endpoint = os.Getenv("MINIO_ENDPOINT")
+	if config.Minio.Endpoint == "" {
+		config.Minio.Endpoint = config.Garage.Endpoint
+	}
 	config.Minio.RootUser = os.Getenv("MINIO_ROOT_USER")
+	if config.Minio.RootUser == "" {
+		config.Minio.RootUser = config.Garage.RootUser
+	}
 	config.Minio.RootPassword = os.Getenv("MINIO_ROOT_PASSWORD")
+	if config.Minio.RootPassword == "" {
+		config.Minio.RootPassword = config.Garage.RootPassword
+	}
 
 	config.PrivateKey = os.Getenv("PRIVATE_KEY")
 

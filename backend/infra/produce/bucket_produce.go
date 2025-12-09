@@ -9,22 +9,13 @@ import (
 )
 
 const (
-	BucketUpdatePolicyQueue      = "bucket.update.policy"
-	BucketUpdatePolicyExchange   = "bucket.exchange"
-	BucketUpdatePolicyRoutingKey = "bucket.update.policy"
-
+	BucketExchange         = "bucket.exchange"
 	BucketDeleteQueue      = "bucket.delete"
 	BucketDeleteRoutingKey = "bucket.delete"
 )
 
 type BucketService struct {
 	channel *amqp.Channel
-}
-
-type UpdateBucketPolicyMessage struct {
-	UserID     string `json:"user_id"`
-	BucketName string `json:"bucket_name"`
-	Timestamp  int64  `json:"timestamp"`
 }
 
 type DeleteBucketMessage struct {
@@ -40,7 +31,7 @@ func InitBucketService(channel *amqp.Channel) *BucketService {
 
 	// Declare exchange
 	err := channel.ExchangeDeclare(
-		BucketUpdatePolicyExchange,
+		BucketExchange,
 		"topic",
 		true,
 		false,
@@ -50,31 +41,6 @@ func InitBucketService(channel *amqp.Channel) *BucketService {
 	)
 	if err != nil {
 		panic("Failed to declare Bucket exchange: " + err.Error())
-	}
-
-	// Declare update policy queue
-	_, err = channel.QueueDeclare(
-		BucketUpdatePolicyQueue,
-		true,  // durable
-		false, // auto-delete
-		false, // exclusive
-		false, // no-wait
-		nil,
-	)
-	if err != nil {
-		panic("Failed to declare Bucket update policy queue: " + err.Error())
-	}
-
-	// Bind update policy queue to exchange
-	err = channel.QueueBind(
-		BucketUpdatePolicyQueue,
-		BucketUpdatePolicyRoutingKey,
-		BucketUpdatePolicyExchange,
-		false,
-		nil,
-	)
-	if err != nil {
-		panic("Failed to bind Bucket update policy queue: " + err.Error())
 	}
 
 	// Declare delete bucket queue
@@ -94,7 +60,7 @@ func InitBucketService(channel *amqp.Channel) *BucketService {
 	err = channel.QueueBind(
 		BucketDeleteQueue,
 		BucketDeleteRoutingKey,
-		BucketUpdatePolicyExchange,
+		BucketExchange,
 		false,
 		nil,
 	)
@@ -103,32 +69,6 @@ func InitBucketService(channel *amqp.Channel) *BucketService {
 	}
 
 	return service
-}
-
-func (s *BucketService) PublishUpdateBucketPolicy(ctx context.Context, userID, bucketName string) error {
-	message := UpdateBucketPolicyMessage{
-		UserID:     userID,
-		BucketName: bucketName,
-		Timestamp:  time.Now().Unix(),
-	}
-
-	body, err := json.Marshal(message)
-	if err != nil {
-		return err
-	}
-
-	return s.channel.PublishWithContext(
-		ctx,
-		BucketUpdatePolicyExchange,
-		BucketUpdatePolicyRoutingKey,
-		false,
-		false,
-		amqp.Publishing{
-			ContentType:  "application/json",
-			Body:         body,
-			DeliveryMode: amqp.Persistent,
-		},
-	)
 }
 
 func (s *BucketService) PublishDeleteBucket(ctx context.Context, userID, bucketName string) error {
@@ -145,7 +85,7 @@ func (s *BucketService) PublishDeleteBucket(ctx context.Context, userID, bucketN
 
 	return s.channel.PublishWithContext(
 		ctx,
-		BucketUpdatePolicyExchange,
+		BucketExchange,
 		BucketDeleteRoutingKey,
 		false,
 		false,
@@ -153,6 +93,7 @@ func (s *BucketService) PublishDeleteBucket(ctx context.Context, userID, bucketN
 			ContentType:  "application/json",
 			Body:         body,
 			DeliveryMode: amqp.Persistent,
+			Timestamp:    time.Now(),
 		},
 	)
 }

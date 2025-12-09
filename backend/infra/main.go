@@ -13,7 +13,7 @@ type Infra struct {
 	AuthorizationService *AuthorizationService
 	UploadService        *UploadService
 	Produce              *produce.Produce
-	Minio                *MinioClient
+	Garage               *GarageAdminClient
 }
 
 var infraInstance *Infra
@@ -58,9 +58,14 @@ func InitInfra(cfg *config.Config) *Infra {
 		panic("Failed to initialize Produce service")
 	}
 
-	minio := InitMinioClient(cfg.EnvConfig)
-	if minio == nil {
-		panic("Failed to initialize MinIO service")
+	garageClient := InitGarageClient(cfg.EnvConfig)
+	if garageClient == nil {
+		panic("Failed to initialize Garage client")
+	}
+
+	garage := InitGarageAdminClient(garageClient)
+	if garage == nil {
+		panic("Failed to initialize Garage admin client")
 	}
 
 	infraInstance = &Infra{
@@ -71,7 +76,7 @@ func InitInfra(cfg *config.Config) *Infra {
 		AuthorizationService: authorizationService,
 		UploadService:        uploadService,
 		Produce:              produceService,
-		Minio:                minio,
+		Garage:               garage,
 	}
 
 	return infraInstance

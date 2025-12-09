@@ -28,19 +28,14 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start IAM Consumer
-	iamConsumer := worker.NewIAMConsumer(infra.RabbitMQ.Channel, infra, repo)
-	if err := iamConsumer.Start(ctx); err != nil {
-		infra.Logger.ErrorWithContextf(ctx, err, "Failed to start IAM consumer: %v", err)
-		log.Fatalf("Failed to start IAM consumer: %v", err)
-	}
-
-	// Start Bucket Consumer
+	// Start Bucket Consumer (handles async bucket deletion from Garage)
 	bucketConsumer := worker.NewBucketConsumer(infra.RabbitMQ.Channel, infra, repo)
 	if err := bucketConsumer.Start(ctx); err != nil {
 		infra.Logger.ErrorWithContextf(ctx, err, "Failed to start Bucket consumer: %v", err)
 		log.Fatalf("Failed to start Bucket consumer: %v", err)
 	}
+
+	infra.Logger.InfoWithContextf(ctx, "Consumer started successfully")
 
 	// Wait for interrupt signal to gracefully shutdown
 	quit := make(chan os.Signal, 1)

@@ -2,10 +2,10 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: gau-garage-deployment
-  namespace: bao-${DEPLOY_ENV}-env
+  namespace: bao-staging-env
   labels:
     app: bao-platform
-    env: ${DEPLOY_ENV}
+    env: staging
 spec:
   replicas: 1
   selector:
@@ -15,7 +15,7 @@ spec:
     metadata:
       labels:
         app: gau-garage-service
-        env: ${DEPLOY_ENV}
+        env: staging
     spec:
       containers:
         - name: garage
@@ -38,7 +38,7 @@ spec:
             - name: GARAGE_RPC_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: gau-garage-${DEPLOY_ENV}-secret
+                  name: gau-garage-staging-secret
                   key: GARAGE_RPC_SECRET
 
           volumeMounts:
@@ -66,7 +66,7 @@ spec:
             claimName: gau-garage-pvc
         - name: garage-config
           configMap:
-            name: gau-garage-${DEPLOY_ENV}-config
+            name: gau-garage-staging-config
             items:
               - key: garage.toml
                 path: garage.toml
