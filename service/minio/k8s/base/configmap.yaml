@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gau-minio-staging-config
+  namespace: bao-staging-env
+  labels:
+    app: bao-platform
+    env: staging
+data:
+  MINIO_BROWSER: "on"
+  MINIO_DOMAIN: ""
