@@ -31,14 +31,27 @@ spec:
                 name: gau-minio-service
                 port:
                   number: 9001
-
-    - host: ""
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gau-minio-web-hosting-ingress
+  namespace: bao-staging-env
+  labels:
+    app: bao-platform
+    env: staging
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  rules:
+    # Access: <bucket>.web.gauas.online -> nginx proxy -> minio
+    - host: "*.web.gauas.online"
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: gau-minio-service
+                name: gau-minio-nginx-proxy-service
                 port:
-                  number: 9000
+                  number: 80

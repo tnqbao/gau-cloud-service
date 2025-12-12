@@ -19,3 +19,21 @@ spec:
       port: 9001
       targetPort: 9001
       protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gau-minio-nginx-proxy-service
+  namespace: bao-staging-env
+  labels:
+    app: bao-platform
+    env: staging
+spec:
+  type: ClusterIP
+  selector:
+    app: gau-minio-nginx-proxy
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
