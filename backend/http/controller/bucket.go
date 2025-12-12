@@ -206,6 +206,7 @@ func (ctrl *Controller) UpdateBucketAccess(c *gin.Context) {
 	}
 
 	userID, err := uuid.Parse(userIDStr)
+
 	if err != nil {
 		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Bucket] Invalid user_id format: %v", err)
 		utils.JSON400(c, "Invalid user_id format")
