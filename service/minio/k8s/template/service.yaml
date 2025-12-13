@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: gau--temp-minio-service
+  name: gau-temp-minio-service
   namespace: bao-${DEPLOY_ENV}-env
   labels:
     app: bao-platform
