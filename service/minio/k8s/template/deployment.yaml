@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: gau-minio-deployment
+  name: gau-temp-minio-deployment
   namespace: bao-${DEPLOY_ENV}-env
   labels:
     app: bao-platform
@@ -10,7 +10,7 @@ spec:
   replicas: 1
   selector:
     matchLabels:
-      app: gau-minio-service
+      app: gau-temp-minio-service
   template:
     metadata:
       labels:
@@ -43,7 +43,7 @@ spec:
 
           envFrom:
             - configMapRef:
-                name: gau-minio-${DEPLOY_ENV}-config
+                name: gau-temp-minio-${DEPLOY_ENV}-config
 
           volumeMounts:
             - name: minio-data
@@ -60,58 +60,4 @@ spec:
       volumes:
         - name: minio-data
           persistentVolumeClaim:
-            claimName: gau-minio-pvc
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: gau-minio-nginx-proxy
-  namespace: bao-${DEPLOY_ENV}-env
-  labels:
-    app: bao-platform
-    env: ${DEPLOY_ENV}
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: gau-minio-nginx-proxy
-  template:
-    metadata:
-      labels:
-        app: gau-minio-nginx-proxy
-        env: ${DEPLOY_ENV}
-    spec:
-      containers:
-        - name: nginx
-          image: nginx:1.25-alpine
-          ports:
-            - containerPort: 8080
-              name: http
-          volumeMounts:
-            - name: nginx-config
-              mountPath: /etc/nginx/nginx.conf
-              subPath: nginx.conf
-              readOnly: true
-          resources:
-            requests:
-              cpu: "50m"
-              memory: "64Mi"
-            limits:
-              cpu: "200m"
-              memory: "128Mi"
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 5
-            periodSeconds: 5
-      volumes:
-        - name: nginx-config
-          configMap:
-            name: gau-minio-nginx-proxy-config
+            claimName: gau-temp-minio-pvc

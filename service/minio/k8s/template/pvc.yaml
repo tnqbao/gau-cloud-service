@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: gau-minio-pvc
+  name: gau-temp-minio-pvc
   namespace: bao-${DEPLOY_ENV}-env
   labels:
     app: bao-platform
@@ -9,7 +9,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: minio-local
+  storageClassName: temp-minio-local
   resources:
     requests:
-      storage: 180Gi
+      storage: 50Gi
