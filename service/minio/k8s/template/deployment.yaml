@@ -14,7 +14,7 @@ spec:
   template:
     metadata:
       labels:
-        app: gau-minio-service
+        app: gau-temp-minio-service
         env: ${DEPLOY_ENV}
     spec:
       containers:
