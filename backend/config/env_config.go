@@ -41,6 +41,17 @@ type EnvConfig struct {
 		RootUser     string
 		RootPassword string
 	}
+	TempMinio struct {
+		Endpoint  string
+		AccessKey string
+		SecretKey string
+		Region    string
+		UseSSL    bool
+	}
+	LargeFile struct {
+		Threshold  int64  // Default 50MB (52428800 bytes)
+		TempBucket string // Bucket for temp storage
+	}
 	ExternalService struct {
 		AuthorizationServiceURL string
 		UploadServiceURL        string
@@ -111,6 +122,41 @@ func LoadEnvConfig() *EnvConfig {
 	config.Minio.Endpoint = os.Getenv("MINIO_ENDPOINT")
 	config.Minio.RootUser = os.Getenv("MINIO_ROOT_USER")
 	config.Minio.RootPassword = os.Getenv("MINIO_ROOT_PASSWORD")
+
+	// TempMinio configuration (for large file uploads)
+	config.TempMinio.Endpoint = os.Getenv("TEMP_MINIO_ENDPOINT")
+	if config.TempMinio.Endpoint == "" {
+		config.TempMinio.Endpoint = config.Minio.Endpoint // Default to main MinIO
+	}
+	config.TempMinio.AccessKey = os.Getenv("TEMP_MINIO_ACCESS_KEY_ID")
+	if config.TempMinio.AccessKey == "" {
+		config.TempMinio.AccessKey = config.Minio.RootUser
+	}
+	config.TempMinio.SecretKey = os.Getenv("TEMP_MINIO_SECRET_ACCESS_KEY")
+	if config.TempMinio.SecretKey == "" {
+		config.TempMinio.SecretKey = config.Minio.RootPassword
+	}
+	config.TempMinio.Region = os.Getenv("TEMP_MINIO_REGION")
+	if config.TempMinio.Region == "" {
+		config.TempMinio.Region = "us-east-1"
+	}
+	tempUseSSL := os.Getenv("TEMP_MINIO_USE_SSL")
+	config.TempMinio.UseSSL = tempUseSSL == "true" || tempUseSSL == "1"
+
+	// Large file configuration
+	if thresholdStr := os.Getenv("LARGE_FILE_THRESHOLD"); thresholdStr != "" {
+		if threshold, err := strconv.ParseInt(thresholdStr, 10, 64); err == nil {
+			config.LargeFile.Threshold = threshold
+		} else {
+			config.LargeFile.Threshold = 52428800 // Default 50MB
+		}
+	} else {
+		config.LargeFile.Threshold = 52428800 // Default 50MB
+	}
+	config.LargeFile.TempBucket = os.Getenv("LARGE_FILE_TEMP_BUCKET")
+	if config.LargeFile.TempBucket == "" {
+		config.LargeFile.TempBucket = "temp-uploads"
+	}
 
 	config.PrivateKey = os.Getenv("PRIVATE_KEY")
 

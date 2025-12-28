@@ -11,6 +11,11 @@ func JSON200(c *gin.Context, data gin.H) {
 	c.JSON(200, data)
 }
 
+func JSON202(c *gin.Context, data gin.H) {
+	data["status"] = 202
+	c.JSON(202, data)
+}
+
 func JSON500(c *gin.Context, err string) {
 	fmt.Print("Error: ", err, "\n")
 	c.JSON(500, gin.H{
