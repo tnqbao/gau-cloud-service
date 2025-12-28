@@ -33,12 +33,12 @@ spec:
             - name: MINIO_ROOT_USER
               valueFrom:
                 secretKeyRef:
-                  name: gau-minio-${DEPLOY_ENV}-secret
+                  name: gau-temp-minio-${DEPLOY_ENV}-secret
                   key: MINIO_ROOT_USER
             - name: MINIO_ROOT_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: gau-minio-${DEPLOY_ENV}-secret
+                  name: gau-temp-minio-${DEPLOY_ENV}-secret
                   key: MINIO_ROOT_PASSWORD
 
           envFrom:
