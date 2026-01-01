@@ -26,10 +26,10 @@ spec:
                 name: gau-cloud-${DEPLOY_ENV}-secret
           resources:
             requests:
-              cpu: "50m"
+              cpu: "250m"
               memory: "128Mi"
             limits:
-              cpu: "100m"
+              cpu: "750m"
               memory: "256Mi"
 
 ---

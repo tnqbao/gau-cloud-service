@@ -15,19 +15,22 @@ import (
 type TempMinioClient struct {
 	Client   *minio.Client
 	Endpoint string
+	Region   string
 }
 
 // NewTempMinioClient creates a new MinIO client for temp storage
 func NewTempMinioClient(cfg *config.EnvConfig) (*TempMinioClient, error) {
 	endpoint := cfg.TempMinio.Endpoint
-	accessKey := cfg.TempMinio.AccessKey
-	secretKey := cfg.TempMinio.SecretKey
+	accessKey := cfg.TempMinio.RootUser
+	secretKey := cfg.TempMinio.RootPassword
 	useSSL := cfg.TempMinio.UseSSL
+	region := cfg.TempMinio.Region
 
 	if endpoint == "" || accessKey == "" || secretKey == "" {
 		return nil, fmt.Errorf("temp MinIO configuration is incomplete")
 	}
 
+	// Initialize MinIO client object.
 	minioClient, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
 		Secure: useSSL,
@@ -39,21 +42,31 @@ func NewTempMinioClient(cfg *config.EnvConfig) (*TempMinioClient, error) {
 	return &TempMinioClient{
 		Client:   minioClient,
 		Endpoint: endpoint,
+		Region:   region,
 	}, nil
 }
 
 // EnsureBucket creates a bucket if it doesn't exist
 func (m *TempMinioClient) EnsureBucket(ctx context.Context, bucket string) error {
+	fmt.Printf("[TempMinio] Checking if bucket '%s' exists (Endpoint: %s, Region: %s)\n", bucket, m.Endpoint, m.Region)
 	exists, err := m.Client.BucketExists(ctx, bucket)
 	if err != nil {
+		fmt.Printf("[TempMinio] Failed to check bucket existence: %v\n", err)
 		return fmt.Errorf("failed to check bucket existence: %w", err)
 	}
 
 	if !exists {
-		err = m.Client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{})
+		fmt.Printf("[TempMinio] Bucket '%s' does not exist, creating...\n", bucket)
+		err = m.Client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{
+			Region: m.Region,
+		})
 		if err != nil {
+			fmt.Printf("[TempMinio] Failed to create bucket: %v\n", err)
 			return fmt.Errorf("failed to create bucket: %w", err)
 		}
+		fmt.Printf("[TempMinio] Bucket '%s' created successfully\n", bucket)
+	} else {
+		fmt.Printf("[TempMinio] Bucket '%s' already exists\n", bucket)
 	}
 	return nil
 }
@@ -146,4 +159,23 @@ func (m *TempMinioClient) HeadObject(ctx context.Context, bucket, key string) (*
 		return nil, fmt.Errorf("failed to stat object: %w", err)
 	}
 	return &stat, nil
+}
+
+// CopyObject copies an object from source to destination within or across buckets
+func (m *TempMinioClient) CopyObject(ctx context.Context, srcBucket, srcKey, dstBucket, dstKey string) error {
+	src := minio.CopySrcOptions{
+		Bucket: srcBucket,
+		Object: srcKey,
+	}
+
+	dst := minio.CopyDestOptions{
+		Bucket: dstBucket,
+		Object: dstKey,
+	}
+
+	_, err := m.Client.CopyObject(ctx, dst, src)
+	if err != nil {
+		return fmt.Errorf("failed to copy object: %w", err)
+	}
+	return nil
 }
