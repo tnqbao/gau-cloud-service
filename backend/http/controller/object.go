@@ -129,9 +129,9 @@ func (ctrl *Controller) UploadObject(c *gin.Context) {
 			"file_size": fileHeader.Size,
 			"threshold": largeFileThreshold,
 			"endpoints": gin.H{
-				"init":     "POST /api/v1/cloud/buckets/:id/objects/chunked/init",
-				"chunk":    "POST /api/v1/cloud/buckets/:id/objects/chunked/chunk",
-				"complete": "POST /api/v1/cloud/buckets/:id/objects/chunked/complete",
+				"init":     "POST /api/v1/cloud/buckets/:id/chunked/init",
+				"chunk":    "POST /api/v1/cloud/buckets/:id/chunked/chunk",
+				"complete": "POST /api/v1/cloud/buckets/:id/chunked/complete",
 			},
 		})
 		return
