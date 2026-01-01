@@ -3,7 +3,7 @@ package routes
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/tnqbao/gau-cloud-orchestrator/http/controller"
-	"github.com/tnqbao/gau-cloud-orchestrator/http/middleware"
+	middlewares "github.com/tnqbao/gau-cloud-orchestrator/http/middleware"
 )
 
 func SetupRouter(ctrl *controller.Controller) *gin.Engine {
@@ -33,6 +33,11 @@ func SetupRouter(ctrl *controller.Controller) *gin.Engine {
 			bucketRoutes.DELETE("/:id", ctrl.DeleteBucketByID)
 			bucketRoutes.PUT("/:id/access", ctrl.UpdateBucketAccess)
 			bucketRoutes.GET("/:id/access", ctrl.GetBucketAccess)
+
+			// Object routes (nested under bucket)
+			bucketRoutes.POST("/:id/objects", ctrl.UploadObject)
+			bucketRoutes.GET("/:id/objects/*path", ctrl.ListObjectsByPath)
+			bucketRoutes.DELETE("/:id/objects/:object_id", ctrl.DeleteObject)
 		}
 
 	}

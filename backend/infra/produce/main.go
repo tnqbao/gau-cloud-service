@@ -6,6 +6,7 @@ type Produce struct {
 	EmailService  *EmailService
 	IAMService    *IAMService
 	BucketService *BucketService
+	UploadService *UploadProduceService
 }
 
 var produceInstance *Produce
@@ -30,10 +31,16 @@ func InitProduce(channel *amqp.Channel) *Produce {
 		panic("Failed to initialize Bucket service")
 	}
 
+	uploadService := InitUploadProduceService(channel)
+	if uploadService == nil {
+		panic("Failed to initialize Upload produce service")
+	}
+
 	produceInstance = &Produce{
 		EmailService:  emailService,
 		IAMService:    iamService,
 		BucketService: bucketService,
+		UploadService: uploadService,
 	}
 
 	return produceInstance

@@ -11,21 +11,21 @@ spec:
       port: 8080
       targetPort: 8080
   type: ClusterIP
-#---
-#apiVersion: v1
-#kind: Service
-#metadata:
-#  name: gau-cloud-consumer-service
-#  namespace: bao-${DEPLOY_ENV}-env
-#spec:
-#  selector:
-#    app: gau-cloud-consumer-service
-#  ports:
-#    - name: http
-#      port: 8080
-#      targetPort: 8080
-#  type: ClusterIP
-#---
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gau-cloud-consumer-service
+  namespace: bao-${DEPLOY_ENV}-env
+spec:
+  selector:
+    app: gau-cloud-consumer-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP
+---
 #apiVersion: v1
 #kind: Service
 #metadata:
