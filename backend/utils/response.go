@@ -58,3 +58,8 @@ func JSON404(c *gin.Context, err string) {
 		"status": 404,
 	})
 }
+
+func JSON413(c *gin.Context, data gin.H) {
+	data["status"] = 413
+	c.JSON(413, data)
+}

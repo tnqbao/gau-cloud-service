@@ -1,11 +1,30 @@
 package controller
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/tnqbao/gau-cloud-orchestrator/entity"
+	"github.com/tnqbao/gau-cloud-orchestrator/http/controller/dto"
+	"github.com/tnqbao/gau-cloud-orchestrator/infra/produce"
 	"github.com/tnqbao/gau-cloud-orchestrator/utils"
+)
+
+const (
+	// DefaultChunkSize is the default size for each chunk (5MB)
+	DefaultChunkSize int64 = 5 * 1024 * 1024
+	// MaxChunkSize is the maximum allowed chunk size (10MB - safe for Cloudflare)
+	MaxChunkSize int64 = 10 * 1024 * 1024
+	// UploadSessionExpiry is the default expiry time for upload sessions (24 hours)
+	UploadSessionExpiry = 24 * time.Hour
 )
 
 func (ctrl *Controller) UploadObject(c *gin.Context) {
@@ -99,12 +118,27 @@ func (ctrl *Controller) UploadObject(c *gin.Context) {
 
 	// Route based on file size
 	if fileHeader.Size > largeFileThreshold {
-		// Large file flow: upload to temp MinIO and publish message for chunking
-		ctrl.handleLargeFileUpload(c, fileHeader, bucket, bucketID, userID, customPath, contentType)
-	} else {
-		// Small file flow: use existing direct upload
-		ctrl.handleSmallFileUpload(c, fileHeader, bucket, bucketID, customPath, contentType)
+		// Large file: reject and instruct to use chunked upload API
+		// This prevents Cloudflare 413 errors by ensuring large files use chunked upload
+		ctrl.Infra.Logger.WarningWithContextf(ctx, "[Object] File size %d exceeds threshold %d, rejecting",
+			fileHeader.Size, largeFileThreshold)
+		utils.JSON413(c, gin.H{
+			"error":     "FILE_TOO_LARGE",
+			"message":   "File size exceeds the maximum allowed for direct upload",
+			"hint":      "Use chunked upload API for files larger than " + formatBytes(largeFileThreshold),
+			"file_size": fileHeader.Size,
+			"threshold": largeFileThreshold,
+			"endpoints": gin.H{
+				"init":     "POST /api/v1/cloud/buckets/:id/objects/chunked/init",
+				"chunk":    "POST /api/v1/cloud/buckets/:id/objects/chunked/chunk",
+				"complete": "POST /api/v1/cloud/buckets/:id/objects/chunked/complete",
+			},
+		})
+		return
 	}
+
+	// Small file flow: use existing direct upload
+	ctrl.handleSmallFileUpload(c, fileHeader, bucket, bucketID, customPath, contentType)
 }
 
 func (ctrl *Controller) ListObjectsByPath(c *gin.Context) {
@@ -276,12 +310,613 @@ func (ctrl *Controller) DeleteObject(c *gin.Context) {
 		return
 	}
 
-	// TODO: Optionally delete file from storage via upload service
-	// For now, we just delete the metadata. The actual file may be kept for deduplication purposes.
-
 	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Successfully deleted object: %s", objectID)
 	utils.JSON200(c, gin.H{
 		"message":   "Object deleted successfully",
 		"object_id": objectID,
+	})
+}
+
+func (ctrl *Controller) InitChunkedUpload(c *gin.Context) {
+	ctx := c.Request.Context()
+	userIDStr := c.GetString("user_id")
+	if userIDStr == "" {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, nil, "[Object] user_id not found in context")
+		utils.JSON401(c, "Unauthorized: user_id not found")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Invalid user_id format")
+		utils.JSON400(c, "Invalid user_id format")
+		return
+	}
+
+	bucketIDStr := c.Param("id")
+	if bucketIDStr == "" {
+		utils.JSON400(c, "bucket_id is required")
+		return
+	}
+
+	bucketID, err := uuid.Parse(bucketIDStr)
+	if err != nil {
+		utils.JSON400(c, "Invalid bucket_id format")
+		return
+	}
+
+	bucket, err := ctrl.Repository.BucketRepo.FindByID(bucketID)
+	if err != nil {
+		utils.JSON404(c, "Bucket not found")
+		return
+	}
+
+	if bucket.OwnerID != userID {
+		utils.JSON403(c, "Forbidden: you don't have permission to access this bucket")
+		return
+	}
+
+	var req dto.InitUploadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Invalid request body")
+		utils.JSON400(c, "Invalid request body: "+err.Error())
+		return
+	}
+
+	largeFileThreshold := ctrl.Config.EnvConfig.LargeFile.Threshold
+	if largeFileThreshold == 0 {
+		largeFileThreshold = 52428800
+	}
+
+	if req.FileSize <= largeFileThreshold {
+		utils.JSON400(c, fmt.Sprintf("File size is below threshold (%d bytes). Use regular upload endpoint.", largeFileThreshold))
+		return
+	}
+
+	if ctrl.Infra.TempMinio == nil {
+		utils.JSON500(c, "Chunked upload is not configured")
+		return
+	}
+
+	chunkSize := DefaultChunkSize
+	totalChunks := int((req.FileSize + chunkSize - 1) / chunkSize)
+
+	uploadID := uuid.New()
+	tempBucket := ctrl.Config.EnvConfig.LargeFile.TempBucket
+	tempPrefix := fmt.Sprintf("pending/%s/", uploadID.String())
+
+	customPath := strings.TrimSpace(req.Path)
+	if customPath != "" {
+		customPath = strings.Trim(customPath, "/\\")
+		customPath = strings.ReplaceAll(customPath, "\\", "/")
+		for strings.Contains(customPath, "//") {
+			customPath = strings.ReplaceAll(customPath, "//", "/")
+		}
+		if strings.Contains(customPath, "..") {
+			utils.JSON400(c, "Invalid path: path cannot contain '..'")
+			return
+		}
+	}
+
+	contentType := req.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	if err := ctrl.Infra.TempMinio.EnsureBucket(ctx, tempBucket); err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to ensure temp bucket")
+		utils.JSON500(c, "Failed to prepare upload storage")
+		return
+	}
+
+	session := &entity.UploadSession{
+		ID:             uploadID,
+		BucketID:       bucketID,
+		UserID:         userID,
+		FileName:       req.FileName,
+		FileSize:       req.FileSize,
+		ContentType:    contentType,
+		CustomPath:     customPath,
+		ChunkSize:      chunkSize,
+		TotalChunks:    totalChunks,
+		UploadedChunks: 0,
+		Status:         entity.UploadStatusInit,
+		TempBucket:     tempBucket,
+		TempPrefix:     tempPrefix,
+		ExpiresAt:      time.Now().Add(UploadSessionExpiry),
+	}
+
+	if err := ctrl.Repository.UploadSessionRepo.Create(session); err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to create upload session")
+		utils.JSON500(c, "Failed to initialize upload session")
+		return
+	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Initialized upload session %s for file '%s' (%d bytes, %d chunks)",
+		uploadID, req.FileName, req.FileSize, totalChunks)
+
+	utils.JSON200(c, gin.H{
+		"upload_id":    uploadID.String(),
+		"chunk_size":   chunkSize,
+		"total_chunks": totalChunks,
+		"temp_prefix":  tempPrefix,
+		"expires_at":   session.ExpiresAt.Format(time.RFC3339),
+	})
+}
+
+// UploadChunk handles uploading a single chunk
+// POST /bucket/:id/uploads/chunk
+func (ctrl *Controller) UploadChunk(c *gin.Context) {
+	ctx := c.Request.Context()
+	userIDStr := c.GetString("user_id")
+	if userIDStr == "" {
+		utils.JSON401(c, "Unauthorized: user_id not found")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		utils.JSON400(c, "Invalid user_id format")
+		return
+	}
+
+	bucketIDStr := c.Param("id")
+	bucketID, err := uuid.Parse(bucketIDStr)
+	if err != nil {
+		utils.JSON400(c, "Invalid bucket_id format")
+		return
+	}
+
+	bucket, err := ctrl.Repository.BucketRepo.FindByID(bucketID)
+	if err != nil {
+		utils.JSON404(c, "Bucket not found")
+		return
+	}
+
+	if bucket.OwnerID != userID {
+		utils.JSON403(c, "Forbidden: you don't have permission to access this bucket")
+		return
+	}
+
+	uploadIDStr := c.Query("upload_id")
+	if uploadIDStr == "" {
+		uploadIDStr = c.GetHeader("X-Upload-ID")
+	}
+	if uploadIDStr == "" {
+		utils.JSON400(c, "upload_id is required")
+		return
+	}
+
+	uploadID, err := uuid.Parse(uploadIDStr)
+	if err != nil {
+		utils.JSON400(c, "Invalid upload_id format")
+		return
+	}
+
+	chunkIndexStr := c.Query("chunk_index")
+	if chunkIndexStr == "" {
+		chunkIndexStr = c.GetHeader("X-Chunk-Index")
+	}
+	var chunkIndex int
+	if _, err := fmt.Sscanf(chunkIndexStr, "%d", &chunkIndex); err != nil {
+		utils.JSON400(c, "Invalid chunk_index")
+		return
+	}
+
+	session, err := ctrl.Repository.UploadSessionRepo.FindByIDAndBucketID(uploadID, bucketID)
+	if err != nil {
+		utils.JSON404(c, "Upload session not found")
+		return
+	}
+
+	if session.Status != entity.UploadStatusInit && session.Status != entity.UploadStatusUploading {
+		utils.JSON400(c, fmt.Sprintf("Upload session is not active, current status: %s", session.Status))
+		return
+	}
+
+	if time.Now().After(session.ExpiresAt) {
+		utils.JSON400(c, "Upload session has expired")
+		return
+	}
+
+	if chunkIndex < 0 || chunkIndex >= session.TotalChunks {
+		utils.JSON400(c, fmt.Sprintf("Invalid chunk_index: must be between 0 and %d", session.TotalChunks-1))
+		return
+	}
+
+	if ctrl.Infra.TempMinio == nil {
+		utils.JSON500(c, "Chunked upload is not configured")
+		return
+	}
+
+	var chunkReader io.Reader
+	var chunkSize int64
+
+	file, header, err := c.Request.FormFile("chunk")
+	if err == nil {
+		chunkReader = file
+		chunkSize = header.Size
+		defer file.Close()
+	} else {
+		chunkReader = c.Request.Body
+		chunkSize = c.Request.ContentLength
+		if chunkSize <= 0 {
+			utils.JSON400(c, "Content-Length header is required for raw body upload")
+			return
+		}
+	}
+
+	if chunkSize > MaxChunkSize {
+		utils.JSON400(c, fmt.Sprintf("Chunk size %d exceeds maximum allowed %d", chunkSize, MaxChunkSize))
+		return
+	}
+
+	chunkKey := fmt.Sprintf("%s%d.part", session.TempPrefix, chunkIndex)
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Uploading chunk %d/%d for session %s (size: %d)",
+		chunkIndex+1, session.TotalChunks, uploadID, chunkSize)
+
+	err = ctrl.Infra.TempMinio.PutObjectStream(ctx, session.TempBucket, chunkKey, chunkReader, chunkSize, "application/octet-stream", nil)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to upload chunk %d", chunkIndex)
+		utils.JSON500(c, "Failed to upload chunk")
+		return
+	}
+
+	if err := ctrl.Repository.UploadSessionRepo.IncrementUploadedChunks(uploadID); err != nil {
+		ctrl.Infra.Logger.WarningWithContextf(ctx, "[Object] Failed to update upload progress: %v", err)
+	}
+
+	updatedSession, _ := ctrl.Repository.UploadSessionRepo.GetUploadProgress(uploadID)
+	uploadedChunks := 0
+	if updatedSession != nil {
+		uploadedChunks = updatedSession.UploadedChunks
+	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Chunk %d uploaded successfully (%d/%d)",
+		chunkIndex, uploadedChunks, session.TotalChunks)
+
+	utils.JSON200(c, gin.H{
+		"chunk_index":     chunkIndex,
+		"uploaded_chunks": uploadedChunks,
+		"total_chunks":    session.TotalChunks,
+		"status":          string(entity.UploadStatusUploading),
+	})
+}
+
+// CompleteChunkedUpload completes a chunked upload by composing all chunks
+// POST /bucket/:id/uploads/complete
+func (ctrl *Controller) CompleteChunkedUpload(c *gin.Context) {
+	ctx := c.Request.Context()
+	userIDStr := c.GetString("user_id")
+	if userIDStr == "" {
+		utils.JSON401(c, "Unauthorized: user_id not found")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		utils.JSON400(c, "Invalid user_id format")
+		return
+	}
+
+	bucketIDStr := c.Param("id")
+	bucketID, err := uuid.Parse(bucketIDStr)
+	if err != nil {
+		utils.JSON400(c, "Invalid bucket_id format")
+		return
+	}
+
+	bucket, err := ctrl.Repository.BucketRepo.FindByID(bucketID)
+	if err != nil {
+		utils.JSON404(c, "Bucket not found")
+		return
+	}
+
+	if bucket.OwnerID != userID {
+		utils.JSON403(c, "Forbidden: you don't have permission to access this bucket")
+		return
+	}
+
+	var req dto.CompleteUploadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.JSON400(c, "Invalid request body: "+err.Error())
+		return
+	}
+
+	uploadID, err := uuid.Parse(req.UploadID)
+	if err != nil {
+		utils.JSON400(c, "Invalid upload_id format")
+		return
+	}
+
+	session, err := ctrl.Repository.UploadSessionRepo.FindByIDAndBucketID(uploadID, bucketID)
+	if err != nil {
+		utils.JSON404(c, "Upload session not found")
+		return
+	}
+
+	if session.Status != entity.UploadStatusInit && session.Status != entity.UploadStatusUploading {
+		utils.JSON400(c, fmt.Sprintf("Upload session is not active, current status: %s", session.Status))
+		return
+	}
+
+	if time.Now().After(session.ExpiresAt) {
+		utils.JSON400(c, "Upload session has expired")
+		return
+	}
+
+	if ctrl.Infra.TempMinio == nil {
+		utils.JSON500(c, "Chunked upload is not configured")
+		return
+	}
+
+	chunks, err := ctrl.Infra.TempMinio.ListObjectsWithPrefix(ctx, session.TempBucket, session.TempPrefix)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to list chunks")
+		utils.JSON500(c, "Failed to verify uploaded chunks")
+		return
+	}
+
+	if len(chunks) != session.TotalChunks {
+		utils.JSON400(c, fmt.Sprintf("Missing chunks: expected %d, found %d", session.TotalChunks, len(chunks)))
+		return
+	}
+
+	sort.Slice(chunks, func(i, j int) bool {
+		return chunks[i].Key < chunks[j].Key
+	})
+
+	sourcePaths := make([]string, len(chunks))
+	for i, chunk := range chunks {
+		sourcePaths[i] = chunk.Key
+	}
+
+	ext := filepath.Ext(session.FileName)
+	if ext == "" {
+		ext = ".bin"
+	}
+
+	composedKey := fmt.Sprintf("%scomposed%s", session.TempPrefix, ext)
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Composing %d chunks into %s", len(chunks), composedKey)
+
+	if err := ctrl.Infra.TempMinio.ComposeObject(ctx, session.TempBucket, sourcePaths, composedKey); err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to compose chunks")
+		utils.JSON500(c, "Failed to compose chunks: "+err.Error())
+		return
+	}
+
+	composedStream, composedSize, err := ctrl.Infra.TempMinio.GetObjectStream(ctx, session.TempBucket, composedKey)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to get composed object for hashing")
+		utils.JSON500(c, "Failed to verify composed file")
+		return
+	}
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, composedStream); err != nil {
+		composedStream.Close()
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to calculate file hash")
+		utils.JSON500(c, "Failed to calculate file hash")
+		return
+	}
+	composedStream.Close()
+
+	fileHash := hex.EncodeToString(hasher.Sum(nil))
+
+	finalTempPath := fmt.Sprintf("%s%s", fileHash, ext)
+	if err := ctrl.Infra.TempMinio.CopyObject(ctx, session.TempBucket, composedKey, session.TempBucket, finalTempPath); err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to copy to final path")
+		utils.JSON500(c, "Failed to finalize upload")
+		return
+	}
+
+	go func() {
+		for _, chunk := range chunks {
+			_ = ctrl.Infra.TempMinio.DeleteObject(ctx, session.TempBucket, chunk.Key)
+		}
+		_ = ctrl.Infra.TempMinio.DeleteObject(ctx, session.TempBucket, composedKey)
+	}()
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] File composed with hash %s, publishing to queue", fileHash)
+
+	var targetFolder string
+	if session.CustomPath != "" {
+		targetFolder = fmt.Sprintf("%s/%s", session.CustomPath, fileHash)
+	} else {
+		targetFolder = fileHash
+	}
+
+	msg := produce.ChunkedUploadMessage{
+		UploadType:   getUploadType(ext),
+		TempBucket:   session.TempBucket,
+		TempPath:     finalTempPath,
+		TargetBucket: bucket.Name,
+		TargetFolder: targetFolder,
+		OriginalName: session.FileName,
+		FileHash:     fileHash,
+		FileSize:     composedSize,
+		ChunkSize:    0,
+		Metadata: map[string]string{
+			"user_id":      userID.String(),
+			"bucket_id":    bucketID.String(),
+			"content_type": session.ContentType,
+			"custom_path":  session.CustomPath,
+		},
+	}
+
+	if err := ctrl.Infra.Produce.UploadService.PublishChunkedUpload(ctx, msg); err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to publish message to queue")
+		_ = ctrl.Infra.TempMinio.DeleteObject(ctx, session.TempBucket, finalTempPath)
+		utils.JSON500(c, "Failed to queue file for processing")
+		return
+	}
+
+	if err := ctrl.Repository.UploadSessionRepo.UpdateStatus(uploadID, entity.UploadStatusProcessing); err != nil {
+		ctrl.Infra.Logger.WarningWithContextf(ctx, "[Object] Failed to update session status: %v", err)
+	}
+	if err := ctrl.Repository.UploadSessionRepo.UpdateFileHash(uploadID, fileHash); err != nil {
+		ctrl.Infra.Logger.WarningWithContextf(ctx, "[Object] Failed to update file hash: %v", err)
+	}
+
+	urlPart := fmt.Sprintf("%s%s", fileHash, ext)
+	object := &entity.Object{
+		ID:           uuid.New(),
+		BucketID:     bucketID,
+		ContentType:  session.ContentType,
+		OriginName:   session.FileName,
+		ParentPath:   session.CustomPath,
+		CreatedAt:    time.Now(),
+		LastModified: time.Now(),
+		Size:         composedSize,
+		URL:          urlPart,
+		FileHash:     fileHash,
+	}
+
+	if err := ctrl.Repository.ObjectRepo.Create(object); err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to save object to database")
+		utils.JSON500(c, "Failed to save object metadata")
+		return
+	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Upload completed successfully: %s (hash: %s)", object.ID, fileHash)
+
+	utils.JSON202(c, gin.H{
+		"message":       "Large file accepted for processing",
+		"object":        object,
+		"status":        "processing",
+		"file_hash":     fileHash,
+		"target_folder": targetFolder,
+	})
+}
+
+// GetUploadProgress returns the current progress of an upload session
+// GET /bucket/:id/uploads/:upload_id/progress
+func (ctrl *Controller) GetUploadProgress(c *gin.Context) {
+	ctx := c.Request.Context()
+	userIDStr := c.GetString("user_id")
+	if userIDStr == "" {
+		utils.JSON401(c, "Unauthorized: user_id not found")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		utils.JSON400(c, "Invalid user_id format")
+		return
+	}
+
+	bucketIDStr := c.Param("id")
+	bucketID, err := uuid.Parse(bucketIDStr)
+	if err != nil {
+		utils.JSON400(c, "Invalid bucket_id format")
+		return
+	}
+
+	bucket, err := ctrl.Repository.BucketRepo.FindByID(bucketID)
+	if err != nil {
+		utils.JSON404(c, "Bucket not found")
+		return
+	}
+
+	if bucket.OwnerID != userID {
+		utils.JSON403(c, "Forbidden: you don't have permission to access this bucket")
+		return
+	}
+
+	uploadIDStr := c.Param("upload_id")
+	uploadID, err := uuid.Parse(uploadIDStr)
+	if err != nil {
+		utils.JSON400(c, "Invalid upload_id format")
+		return
+	}
+
+	session, err := ctrl.Repository.UploadSessionRepo.FindByIDAndBucketID(uploadID, bucketID)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Upload session not found: %s", uploadID)
+		utils.JSON404(c, "Upload session not found")
+		return
+	}
+
+	progress := float64(0)
+	if session.TotalChunks > 0 {
+		progress = float64(session.UploadedChunks) / float64(session.TotalChunks) * 100
+	}
+
+	utils.JSON200(c, gin.H{
+		"upload_id":       session.ID.String(),
+		"uploaded_chunks": session.UploadedChunks,
+		"total_chunks":    session.TotalChunks,
+		"status":          string(session.Status),
+		"progress":        progress,
+	})
+}
+
+// AbortChunkedUpload aborts an upload session and cleans up chunks
+// DELETE /bucket/:id/uploads/:upload_id
+func (ctrl *Controller) AbortChunkedUpload(c *gin.Context) {
+	ctx := c.Request.Context()
+	userIDStr := c.GetString("user_id")
+	if userIDStr == "" {
+		utils.JSON401(c, "Unauthorized: user_id not found")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		utils.JSON400(c, "Invalid user_id format")
+		return
+	}
+
+	bucketIDStr := c.Param("id")
+	bucketID, err := uuid.Parse(bucketIDStr)
+	if err != nil {
+		utils.JSON400(c, "Invalid bucket_id format")
+		return
+	}
+
+	bucket, err := ctrl.Repository.BucketRepo.FindByID(bucketID)
+	if err != nil {
+		utils.JSON404(c, "Bucket not found")
+		return
+	}
+
+	if bucket.OwnerID != userID {
+		utils.JSON403(c, "Forbidden: you don't have permission to access this bucket")
+		return
+	}
+
+	uploadIDStr := c.Param("upload_id")
+	uploadID, err := uuid.Parse(uploadIDStr)
+	if err != nil {
+		utils.JSON400(c, "Invalid upload_id format")
+		return
+	}
+
+	session, err := ctrl.Repository.UploadSessionRepo.FindByIDAndBucketID(uploadID, bucketID)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Upload session not found: %s", uploadID)
+		utils.JSON404(c, "Upload session not found")
+		return
+	}
+
+	go func() {
+		if ctrl.Infra.TempMinio != nil {
+			_ = ctrl.Infra.TempMinio.DeleteObjectsWithPrefix(ctx, session.TempBucket, session.TempPrefix)
+		}
+	}()
+
+	if err := ctrl.Repository.UploadSessionRepo.Delete(uploadID); err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to delete upload session")
+		utils.JSON500(c, "Failed to abort upload")
+		return
+	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Upload session aborted: %s", uploadID)
+
+	utils.JSON200(c, gin.H{
+		"message":   "Upload aborted successfully",
+		"upload_id": uploadID.String(),
 	})
 }
