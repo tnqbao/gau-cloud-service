@@ -2,10 +2,11 @@ package dto
 
 // InitUploadRequest represents the request to initialize a chunked upload
 type InitUploadRequest struct {
-	FileName    string `json:"file_name" binding:"required"`
-	FileSize    int64  `json:"file_size" binding:"required,gt=0"`
-	ContentType string `json:"content_type"`
-	Path        string `json:"path"` // Optional custom path
+	FileName           string `json:"file_name" binding:"required"`
+	FileSize           int64  `json:"file_size" binding:"required,gt=0"`
+	ContentType        string `json:"content_type"`
+	Path               string `json:"path"`                 // Optional custom path
+	PreferredChunkSize int64  `json:"preferred_chunk_size"` // Optional: Client's preferred chunk size (server will decide final value)
 }
 
 // InitUploadResponse represents the response after initializing a chunked upload

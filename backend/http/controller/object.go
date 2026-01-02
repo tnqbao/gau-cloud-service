@@ -20,9 +20,9 @@ import (
 
 const (
 	// DefaultChunkSize is the default size for each chunk (5MB)
-	DefaultChunkSize int64 = 5 * 1024 * 1024
+	DefaultChunkSize int64 = 10 * 1024 * 1024
 	// MaxChunkSize is the maximum allowed chunk size (10MB - safe for Cloudflare)
-	MaxChunkSize int64 = 10 * 1024 * 1024
+	MaxChunkSize int64 = 15 * 1024 * 1024
 	// UploadSessionExpiry is the default expiry time for upload sessions (24 hours)
 	UploadSessionExpiry = 24 * time.Hour
 )
@@ -317,6 +317,7 @@ func (ctrl *Controller) DeleteObject(c *gin.Context) {
 	})
 }
 
+// InitChunkedUpload initializes a chunked upload session for large files
 func (ctrl *Controller) InitChunkedUpload(c *gin.Context) {
 	ctx := c.Request.Context()
 	userIDStr := c.GetString("user_id")
@@ -378,7 +379,30 @@ func (ctrl *Controller) InitChunkedUpload(c *gin.Context) {
 		return
 	}
 
+	// Server decides chunk size (production-grade architecture)
+	// 1. Start with default chunk size (5MB)
 	chunkSize := DefaultChunkSize
+
+	// 2. If client suggests a preferred chunk size, consider it
+	if req.PreferredChunkSize > 0 {
+		// Validate client's preference is within acceptable range
+		if req.PreferredChunkSize < DefaultChunkSize {
+			// Too small, use default
+			ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Client preferred chunk size %d is below minimum, using default %d",
+				req.PreferredChunkSize, DefaultChunkSize)
+		} else if req.PreferredChunkSize > MaxChunkSize {
+			// Too large, cap at maximum
+			chunkSize = MaxChunkSize
+			ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Client preferred chunk size %d exceeds maximum, capping at %d",
+				req.PreferredChunkSize, MaxChunkSize)
+		} else {
+			// Within acceptable range, use client's preference
+			chunkSize = req.PreferredChunkSize
+			ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Using client preferred chunk size: %d", chunkSize)
+		}
+	}
+
+	// 3. Calculate total chunks based on SERVER-DECIDED chunk size
 	totalChunks := int((req.FileSize + chunkSize - 1) / chunkSize)
 
 	uploadID := uuid.New()
@@ -432,13 +456,14 @@ func (ctrl *Controller) InitChunkedUpload(c *gin.Context) {
 		return
 	}
 
-	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Initialized upload session %s for file '%s' (%d bytes, %d chunks)",
-		uploadID, req.FileName, req.FileSize, totalChunks)
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] ✓ Initialized upload session %s for file '%s' (%d bytes, %d chunks of %d bytes each)",
+		uploadID, req.FileName, req.FileSize, totalChunks, chunkSize)
 
+	// Server returns the CONTRACT that client MUST follow
 	utils.JSON200(c, gin.H{
 		"upload_id":    uploadID.String(),
-		"chunk_size":   chunkSize,
-		"total_chunks": totalChunks,
+		"chunk_size":   chunkSize,   // Client MUST use this chunk size
+		"total_chunks": totalChunks, // Expected number of chunks
 		"temp_prefix":  tempPrefix,
 		"expires_at":   session.ExpiresAt.Format(time.RFC3339),
 	})
