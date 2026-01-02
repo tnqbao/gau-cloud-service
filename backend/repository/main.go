@@ -6,20 +6,22 @@ import (
 )
 
 type Repository struct {
-	IAMUserRepo   *IAMUserRepository
-	IAMPolicyRepo *IAMPolicyRepository
-	BucketRepo    *BucketRepository
-	ObjectRepo    *ObjectRepository
+	IAMUserRepo       *IAMUserRepository
+	IAMPolicyRepo     *IAMPolicyRepository
+	BucketRepo        *BucketRepository
+	ObjectRepo        *ObjectRepository
+	UploadSessionRepo *UploadSessionRepository
 }
 
 var repository *Repository
 
 func InitRepository(infra *infra.Infra) *Repository {
 	repository = &Repository{
-		IAMUserRepo:   NewIAMUserRepository(infra.Postgres.DB),
-		IAMPolicyRepo: NewIAMPolicyRepository(infra.Postgres.DB),
-		BucketRepo:    NewBucketRepository(infra.Postgres.DB),
-		ObjectRepo:    NewObjectRepository(infra.Postgres.DB),
+		IAMUserRepo:       NewIAMUserRepository(infra.Postgres.DB),
+		IAMPolicyRepo:     NewIAMPolicyRepository(infra.Postgres.DB),
+		BucketRepo:        NewBucketRepository(infra.Postgres.DB),
+		ObjectRepo:        NewObjectRepository(infra.Postgres.DB),
+		UploadSessionRepo: NewUploadSessionRepository(infra.Postgres.DB),
 	}
 	return repository
 }
@@ -37,9 +39,10 @@ func (r *Repository) BeginTransaction(db *gorm.DB) *gorm.DB {
 
 func (r *Repository) WithTransaction(tx *gorm.DB) *Repository {
 	return &Repository{
-		IAMUserRepo:   NewIAMUserRepository(tx),
-		IAMPolicyRepo: NewIAMPolicyRepository(tx),
-		BucketRepo:    NewBucketRepository(tx),
-		ObjectRepo:    NewObjectRepository(tx),
+		IAMUserRepo:       NewIAMUserRepository(tx),
+		IAMPolicyRepo:     NewIAMPolicyRepository(tx),
+		BucketRepo:        NewBucketRepository(tx),
+		ObjectRepo:        NewObjectRepository(tx),
+		UploadSessionRepo: NewUploadSessionRepository(tx),
 	}
 }

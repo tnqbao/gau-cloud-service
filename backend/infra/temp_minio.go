@@ -179,3 +179,79 @@ func (m *TempMinioClient) CopyObject(ctx context.Context, srcBucket, srcKey, dst
 	}
 	return nil
 }
+
+// ComposeObject composes multiple source objects into a single destination object
+// This is used to merge chunks into a single file
+func (m *TempMinioClient) ComposeObject(ctx context.Context, bucket string, sources []string, destKey string) error {
+	if len(sources) == 0 {
+		return fmt.Errorf("no source objects provided")
+	}
+
+	// Build source objects
+	srcs := make([]minio.CopySrcOptions, len(sources))
+	for i, src := range sources {
+		srcs[i] = minio.CopySrcOptions{
+			Bucket: bucket,
+			Object: src,
+		}
+	}
+
+	dst := minio.CopyDestOptions{
+		Bucket: bucket,
+		Object: destKey,
+	}
+
+	_, err := m.Client.ComposeObject(ctx, dst, srcs...)
+	if err != nil {
+		return fmt.Errorf("failed to compose objects: %w", err)
+	}
+	return nil
+}
+
+// ListObjectsWithPrefix lists all objects with a given prefix
+func (m *TempMinioClient) ListObjectsWithPrefix(ctx context.Context, bucket, prefix string) ([]minio.ObjectInfo, error) {
+	var objects []minio.ObjectInfo
+
+	objectCh := m.Client.ListObjects(ctx, bucket, minio.ListObjectsOptions{
+		Prefix:    prefix,
+		Recursive: true,
+	})
+
+	for object := range objectCh {
+		if object.Err != nil {
+			return nil, fmt.Errorf("failed to list objects: %w", object.Err)
+		}
+		objects = append(objects, object)
+	}
+
+	return objects, nil
+}
+
+// DeleteObjectsWithPrefix deletes all objects with a given prefix
+func (m *TempMinioClient) DeleteObjectsWithPrefix(ctx context.Context, bucket, prefix string) error {
+	objects, err := m.ListObjectsWithPrefix(ctx, bucket, prefix)
+	if err != nil {
+		return err
+	}
+
+	for _, obj := range objects {
+		if err := m.DeleteObject(ctx, bucket, obj.Key); err != nil {
+			return fmt.Errorf("failed to delete object %s: %w", obj.Key, err)
+		}
+	}
+
+	return nil
+}
+
+// ObjectExists checks if an object exists
+func (m *TempMinioClient) ObjectExists(ctx context.Context, bucket, key string) (bool, error) {
+	_, err := m.Client.StatObject(ctx, bucket, key, minio.StatObjectOptions{})
+	if err != nil {
+		errResponse := minio.ToErrorResponse(err)
+		if errResponse.Code == "NoSuchKey" {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
