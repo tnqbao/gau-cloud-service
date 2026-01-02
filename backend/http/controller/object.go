@@ -861,3 +861,132 @@ func (ctrl *Controller) AbortChunkedUpload(c *gin.Context) {
 		"upload_id": uploadID.String(),
 	})
 }
+
+// GetChunkedUploadStatus returns detailed status of a chunked upload session
+// GET /bucket/:id/chunked/:upload_id/status
+func (ctrl *Controller) GetChunkedUploadStatus(c *gin.Context) {
+	ctx := c.Request.Context()
+	userIDStr := c.GetString("user_id")
+	if userIDStr == "" {
+		utils.JSON401(c, "Unauthorized: user_id not found")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		utils.JSON400(c, "Invalid user_id format")
+		return
+	}
+
+	bucketIDStr := c.Param("id")
+	bucketID, err := uuid.Parse(bucketIDStr)
+	if err != nil {
+		utils.JSON400(c, "Invalid bucket_id format")
+		return
+	}
+
+	bucket, err := ctrl.Repository.BucketRepo.FindByID(bucketID)
+	if err != nil {
+		utils.JSON404(c, "Bucket not found")
+		return
+	}
+
+	if bucket.OwnerID != userID {
+		utils.JSON403(c, "Forbidden: you don't have permission to access this bucket")
+		return
+	}
+
+	uploadIDStr := c.Param("upload_id")
+	uploadID, err := uuid.Parse(uploadIDStr)
+	if err != nil {
+		utils.JSON400(c, "Invalid upload_id format")
+		return
+	}
+
+	session, err := ctrl.Repository.UploadSessionRepo.FindByIDAndBucketID(uploadID, bucketID)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Upload session not found: %s", uploadID)
+		utils.JSON404(c, "Upload session not found")
+		return
+	}
+
+	// Calculate upload progress
+	uploadProgress := float64(0)
+	if session.TotalChunks > 0 {
+		uploadProgress = float64(session.UploadedChunks) / float64(session.TotalChunks) * 100
+	}
+
+	// Build response based on status
+	response := gin.H{
+		"upload_id":       session.ID.String(),
+		"file_name":       session.FileName,
+		"file_size":       session.FileSize,
+		"content_type":    session.ContentType,
+		"status":          string(session.Status),
+		"uploaded_chunks": session.UploadedChunks,
+		"total_chunks":    session.TotalChunks,
+		"upload_progress": uploadProgress,
+		"created_at":      session.CreatedAt,
+		"updated_at":      session.UpdatedAt,
+		"expires_at":      session.ExpiresAt,
+	}
+
+	// Add status-specific information
+	switch session.Status {
+	case entity.UploadStatusInit:
+		response["message"] = "Upload session initialized, waiting for chunks"
+		response["is_complete"] = false
+
+	case entity.UploadStatusUploading:
+		response["message"] = fmt.Sprintf("Uploading chunks: %d/%d", session.UploadedChunks, session.TotalChunks)
+		response["is_complete"] = false
+
+	case entity.UploadStatusProcessing:
+		response["message"] = "All chunks uploaded, processing file (composing, hashing, copying)..."
+		response["is_complete"] = false
+		response["processing_steps"] = []string{
+			"1. Composing chunks into single file",
+			"2. Calculating SHA256 hash",
+			"3. Moving to final storage",
+			"4. Creating object record",
+		}
+
+	case entity.UploadStatusCompleted:
+		response["message"] = "Upload completed successfully"
+		response["is_complete"] = true
+		response["file_hash"] = session.FileHash
+		// Try to get the object info
+		if session.FileHash != "" {
+			objects, err := ctrl.Repository.ObjectRepo.FindByBucketIDAndHash(bucketID, session.FileHash)
+			if err == nil && len(objects) > 0 {
+				response["object"] = gin.H{
+					"id":          objects[0].ID.String(),
+					"url":         objects[0].URL,
+					"file_hash":   objects[0].FileHash,
+					"size":        objects[0].Size,
+					"origin_name": objects[0].OriginName,
+				}
+			}
+		}
+
+	case entity.UploadStatusFailed:
+		response["message"] = "Upload failed during processing"
+		response["is_complete"] = true
+		response["error"] = "An error occurred while processing the upload. Please try again."
+
+	case entity.UploadStatusExpired:
+		response["message"] = "Upload session has expired"
+		response["is_complete"] = true
+		response["error"] = "The upload session has expired. Please start a new upload."
+	}
+
+	// Check if session is expired
+	if time.Now().After(session.ExpiresAt) && session.Status != entity.UploadStatusCompleted {
+		response["status"] = string(entity.UploadStatusExpired)
+		response["message"] = "Upload session has expired"
+		response["is_complete"] = true
+		response["error"] = "The upload session has expired. Please start a new upload."
+	}
+
+	utils.JSON200(c, response)
+}

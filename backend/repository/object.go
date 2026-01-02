@@ -118,3 +118,12 @@ func (r *ObjectRepository) Delete(id uuid.UUID) error {
 func (r *ObjectRepository) DeleteByBucketID(bucketID uuid.UUID) error {
 	return r.db.Delete(&entity.Object{}, "bucket_id = ?", bucketID).Error
 }
+
+func (r *ObjectRepository) FindByBucketIDAndHash(bucketID uuid.UUID, fileHash string) ([]entity.Object, error) {
+	var objects []entity.Object
+	err := r.db.Where("bucket_id = ? AND file_hash = ?", bucketID, fileHash).Find(&objects).Error
+	if err != nil {
+		return nil, err
+	}
+	return objects, nil
+}

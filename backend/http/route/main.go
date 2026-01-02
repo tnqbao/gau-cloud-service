@@ -44,6 +44,7 @@ func SetupRouter(ctrl *controller.Controller) *gin.Engine {
 			bucketRoutes.POST("/:id/chunked/chunk", ctrl.UploadChunk)
 			bucketRoutes.POST("/:id/chunked/complete", ctrl.CompleteChunkedUpload)
 			bucketRoutes.GET("/:id/chunked/:upload_id/progress", ctrl.GetUploadProgress)
+			bucketRoutes.GET("/:id/chunked/:upload_id/status", ctrl.GetChunkedUploadStatus)
 			bucketRoutes.DELETE("/:id/chunked/:upload_id", ctrl.AbortChunkedUpload)
 		}
 
