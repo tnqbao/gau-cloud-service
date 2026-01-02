@@ -551,7 +551,8 @@ func (ctrl *Controller) UploadChunk(c *gin.Context) {
 		return
 	}
 
-	chunkKey := fmt.Sprintf("%s%d.part", session.TempPrefix, chunkIndex)
+	// Use zero-padded chunk index to ensure correct sorting (e.g., chunk_00, chunk_01, ..., chunk_10)
+	chunkKey := fmt.Sprintf("%schunk_%05d.part", session.TempPrefix, chunkIndex)
 
 	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Uploading chunk %d/%d for session %s (size: %d)",
 		chunkIndex+1, session.TotalChunks, uploadID, chunkSize)
