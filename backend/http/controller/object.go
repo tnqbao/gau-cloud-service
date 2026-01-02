@@ -728,7 +728,7 @@ func (ctrl *Controller) CompleteChunkedUpload(c *gin.Context) {
 		"total_chunks": session.TotalChunks,
 		"file_name":    session.FileName,
 		"file_size":    session.FileSize,
-		"status_url":   fmt.Sprintf("/api/v1/cloud/buckets/%s/chunked/%s/progress", bucketID, uploadID),
+		"status_url":   fmt.Sprintf("/api/v1/cloud/buckets/%s/chunked/%s/status", bucketID, uploadID),
 	})
 }
 
