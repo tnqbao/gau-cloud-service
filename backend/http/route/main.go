@@ -38,6 +38,14 @@ func SetupRouter(ctrl *controller.Controller) *gin.Engine {
 			bucketRoutes.POST("/:id/objects", ctrl.UploadObject)
 			bucketRoutes.GET("/:id/objects/*path", ctrl.ListObjectsByPath)
 			bucketRoutes.DELETE("/:id/objects/:object_id", ctrl.DeleteObject)
+
+			// Chunked upload routes (separate from /objects to avoid wildcard conflict)
+			bucketRoutes.POST("/:id/chunked/init", ctrl.InitChunkedUpload)
+			bucketRoutes.POST("/:id/chunked/chunk", ctrl.UploadChunk)
+			bucketRoutes.POST("/:id/chunked/complete", ctrl.CompleteChunkedUpload)
+			bucketRoutes.GET("/:id/chunked/:upload_id/progress", ctrl.GetUploadProgress)
+			bucketRoutes.GET("/:id/chunked/:upload_id/status", ctrl.GetChunkedUploadStatus)
+			bucketRoutes.DELETE("/:id/chunked/:upload_id", ctrl.AbortChunkedUpload)
 		}
 
 	}

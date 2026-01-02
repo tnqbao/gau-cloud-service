@@ -42,6 +42,13 @@ func main() {
 		log.Fatalf("Failed to start Bucket consumer: %v", err)
 	}
 
+	// Start Upload Consumer (for async chunk composition)
+	uploadConsumer := worker.NewUploadConsumer(infra.RabbitMQ.Channel, infra, repo)
+	if err := uploadConsumer.Start(ctx); err != nil {
+		infra.Logger.ErrorWithContextf(ctx, err, "Failed to start Upload consumer: %v", err)
+		log.Fatalf("Failed to start Upload consumer: %v", err)
+	}
+
 	// Wait for interrupt signal to gracefully shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
