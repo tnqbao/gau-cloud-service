@@ -22,6 +22,7 @@ fi
 
 # Constants
 PREFERRED_CHUNK_SIZE=$((10 * 1024 * 1024))  # 10MB preferred (server decides final)
+MAX_PARALLEL_CHUNKS=5  # Number of chunks to upload simultaneously
 COLOR_GREEN='\033[0;32m'
 COLOR_BLUE='\033[0;34m'
 COLOR_YELLOW='\033[1;33m'
@@ -55,40 +56,102 @@ log_progress() {
 
 format_bytes() {
     local bytes=$1
-    if [ $bytes -lt 1024 ]; then
-        echo "${bytes}B"
-    elif [ $bytes -lt $((1024 * 1024)) ]; then
-        printf "%.2fKB" $(echo "scale=2; $bytes / 1024" | bc)
-    elif [ $bytes -lt $((1024 * 1024 * 1024)) ]; then
-        printf "%.2fMB" $(echo "scale=2; $bytes / 1024 / 1024" | bc)
+    if [ "$bytes" -lt 1048576 ]; then
+        echo "$((bytes / 1024))KB"
     else
-        printf "%.2fGB" $(echo "scale=2; $bytes / 1024 / 1024 / 1024" | bc)
+        echo "$((bytes / 1024 / 1024))MB"
     fi
 }
 
-# Progress bar function
-show_progress() {
-    local current=$1
-    local total=$2
-    local width=50
-    local percentage=$((current * 100 / total))
-    local completed=$((width * current / total))
-    local remaining=$((width - completed))
+get_timestamp() {
+    date '+%Y-%m-%d %H:%M:%S'
+}
 
-    printf "\r${COLOR_CYAN}["
-    printf "%${completed}s" | tr ' ' '█'
-    printf "%${remaining}s" | tr ' ' '░'
-    printf "] %3d%% (%d/%d)${COLOR_RESET}" $percentage $current $total
+get_epoch() {
+    date +%s
+}
+
+start_step() {
+    local step_name="$1"
+    local start_time=$(get_timestamp)
+    local start_epoch=$(get_epoch)
+
+    # Output to stderr so it doesn't interfere with return value
+    echo -e "${COLOR_CYAN}▶ START $step_name at $start_time${COLOR_RESET}" >&2
+
+    # Return both values separated by |
+    echo "$start_time|$start_epoch"
+}
+
+end_step() {
+    local step_name="$1"
+    local start_epoch="$2"
+    local end_time=$(get_timestamp)
+    local end_epoch=$(get_epoch)
+    local duration=$((end_epoch - start_epoch))
+
+    # Output to stderr so it doesn't interfere with return value
+    echo -e "${COLOR_GREEN}■ END   $step_name at $end_time (${duration}s)${COLOR_RESET}" >&2
+    echo "" >&2
+
+    # Return end_time|duration
+    echo "$end_time|$duration"
 }
 
 print_banner() {
     echo -e "${COLOR_CYAN}"
     echo "╔════════════════════════════════════════════════════════╗"
-    echo "║       Production-Grade Chunked Upload Tool            ║"
-    echo "║       Server-Decided Chunk Size Architecture          ║"
+    echo "║       Production-Grade Chunked Upload Tool             ║"
+    echo "║       Server-Decided Chunk Size Architecture           ║"
+    echo "║       Parallel Chunk Upload Support                    ║"
     echo "╚════════════════════════════════════════════════════════╝"
     echo -e "${COLOR_RESET}"
     echo ""
+}
+
+
+# ===========================
+# Parallel Upload Function
+# ===========================
+
+upload_chunk_async() {
+    local FILE_PATH="$1"
+    local CHUNK_FILE="$2"
+    local CHUNK_INDEX="$3"
+    local UPLOAD_ID="$4"
+    local BUCKET_ID="$5"
+    local AUTH_TOKEN="$6"
+    local API_BASE_URL="$7"
+    local TOTAL_CHUNKS="$8"
+    local PROGRESS_DIR="$9"
+
+    local CHUNK_FILE_SIZE=$(stat -f%z "$CHUNK_FILE" 2>/dev/null || stat -c%s "$CHUNK_FILE" 2>/dev/null)
+    local CURRENT_CHUNK=$((CHUNK_INDEX + 1))
+
+    UPLOAD_RESPONSE=$(curl -s -X POST \
+      "$API_BASE_URL/buckets/$BUCKET_ID/chunked/chunk?upload_id=$UPLOAD_ID&chunk_index=$CHUNK_INDEX" \
+      -H "Authorization: Bearer $AUTH_TOKEN" \
+      -F "chunk=@$CHUNK_FILE" 2>&1)
+
+    STATUS_CODE=$(echo "$UPLOAD_RESPONSE" | grep -o '"status":[0-9]*' | cut -d':' -f2)
+
+    if [ "$STATUS_CODE" = "200" ]; then
+        # Mark as success
+        echo "success" > "$PROGRESS_DIR/$CHUNK_INDEX.status"
+        echo "$CHUNK_FILE_SIZE" > "$PROGRESS_DIR/$CHUNK_INDEX.size"
+
+        # Calculate percentage
+        UPLOADED_COUNT=$(ls "$PROGRESS_DIR"/*.status 2>/dev/null | wc -l)
+        PERCENTAGE=$((UPLOADED_COUNT * 100 / TOTAL_CHUNKS))
+
+        log_success "Chunk $CURRENT_CHUNK/$TOTAL_CHUNKS uploaded ($PERCENTAGE%)"
+    else
+        echo "failed" > "$PROGRESS_DIR/$CHUNK_INDEX.status"
+        log_error "Chunk $CURRENT_CHUNK/$TOTAL_CHUNKS failed"
+        echo "$UPLOAD_RESPONSE" > "$PROGRESS_DIR/$CHUNK_INDEX.error"
+    fi
+
+    rm "$CHUNK_FILE"
 }
 
 # ===========================
@@ -135,6 +198,12 @@ upload_file() {
     local FILE_INDEX="$2"
     local TOTAL_FILES="$3"
 
+    # Initialize timing arrays
+    declare -a STEP_NAMES
+    declare -a STEP_START_TIMES
+    declare -a STEP_END_TIMES
+    declare -a STEP_DURATIONS
+
     echo -e "${COLOR_CYAN}════════════════════════════════════════════════════════${COLOR_RESET}"
     log_info "[$FILE_INDEX/$TOTAL_FILES] Processing: $FILE_PATH"
     echo -e "${COLOR_CYAN}════════════════════════════════════════════════════════${COLOR_RESET}"
@@ -159,7 +228,9 @@ upload_file() {
     # Step 1: Initialize Upload
     # ===========================
 
-    log_info "Step 1: Initializing upload session..."
+    STEP_NAME="STEP 1: INIT UPLOAD"
+    STEP_TIMING=$(start_step "$STEP_NAME")
+    STEP_START_EPOCH=$(echo "$STEP_TIMING" | cut -d'|' -f2)
 
     INIT_PAYLOAD=$(cat <<EOF
 {
@@ -192,77 +263,127 @@ EOF
     log_info "Upload ID: ${UPLOAD_ID:0:8}...${UPLOAD_ID: -4}"
     log_info "Server chunk size: $(format_bytes $SERVER_CHUNK_SIZE) (SERVER DECIDED)"
     log_info "Total chunks: $TOTAL_CHUNKS"
+    log_info "Parallel uploads: $MAX_PARALLEL_CHUNKS chunks at a time"
 
     if [ "$SERVER_CHUNK_SIZE" -ne "$PREFERRED_CHUNK_SIZE" ]; then
         log_warning "Server overrode preferred chunk size: $(format_bytes $PREFERRED_CHUNK_SIZE) → $(format_bytes $SERVER_CHUNK_SIZE)"
     fi
-    echo ""
+
+    STEP_END_TIMING=$(end_step "$STEP_NAME" "$STEP_START_EPOCH")
+    STEP_NAMES+=("$STEP_NAME")
+    STEP_START_TIMES+=($(echo "$STEP_TIMING" | cut -d'|' -f1))
+    STEP_END_TIMES+=($(echo "$STEP_END_TIMING" | cut -d'|' -f1))
+    STEP_DURATIONS+=($(echo "$STEP_END_TIMING" | cut -d'|' -f2))
 
     # ===========================
-    # Step 2: Upload Chunks
+    # Step 2: Upload Chunks (Parallel)
     # ===========================
 
-    log_info "Step 2: Uploading chunks..."
+    STEP_NAME="STEP 2: PREPARE & UPLOAD CHUNKS"
+    STEP_TIMING=$(start_step "$STEP_NAME")
+    STEP_START_EPOCH=$(echo "$STEP_TIMING" | cut -d'|' -f2)
 
     TEMP_DIR=$(mktemp -d)
-    trap "rm -rf $TEMP_DIR" EXIT
+    PROGRESS_DIR=$(mktemp -d)
+    trap "rm -rf $TEMP_DIR $PROGRESS_DIR" EXIT
 
-    CHUNK_INDEX=0
-    BYTES_UPLOADED=0
     START_TIME=$(date +%s)
 
-    while [ $BYTES_UPLOADED -lt $FILE_SIZE ]; do
+    log_info "Preparing chunks..."
+  CHUNK_INDEX=0
+
+  while [ $CHUNK_INDEX -lt $TOTAL_CHUNKS ]; do
+    CHUNK_FILE="$TEMP_DIR/chunk_$CHUNK_INDEX.part"
+
+    dd if="$FILE_PATH" of="$CHUNK_FILE" \
+      bs="$SERVER_CHUNK_SIZE" \
+      skip="$CHUNK_INDEX" \
+      count=1 \
+      status=none 2>/dev/null
+
+    CHUNK_INDEX=$((CHUNK_INDEX + 1))
+  done
+
+
+    log_success "All chunks prepared"
+    echo ""
+
+    # Upload chunks in parallel batches
+    CHUNK_INDEX=0
+    ACTIVE_JOBS=0
+
+    while [ $CHUNK_INDEX -lt $TOTAL_CHUNKS ]; do
+        # Wait if we have too many parallel jobs
+        while [ $ACTIVE_JOBS -ge $MAX_PARALLEL_CHUNKS ]; do
+            # Wait for any background job to finish
+            wait -n 2>/dev/null
+            ACTIVE_JOBS=$((ACTIVE_JOBS - 1))
+        done
+
         CHUNK_FILE="$TEMP_DIR/chunk_$CHUNK_INDEX.part"
-
-        OFFSET=$((CHUNK_INDEX * SERVER_CHUNK_SIZE))
-
-        # Use server-decided chunk size
-        dd if="$FILE_PATH" of="$CHUNK_FILE" \
-           bs=1 \
-           skip=$OFFSET \
-           count=$SERVER_CHUNK_SIZE \
-           status=none 2>/dev/null
-
+        CURRENT_CHUNK=$((CHUNK_INDEX + 1))
         CHUNK_FILE_SIZE=$(stat -f%z "$CHUNK_FILE" 2>/dev/null || stat -c%s "$CHUNK_FILE" 2>/dev/null)
 
-        # Show progress bar
-        show_progress $((CHUNK_INDEX + 1)) $TOTAL_CHUNKS
+        log_info "Uploading chunk $CURRENT_CHUNK/$TOTAL_CHUNKS ($CHUNK_FILE_SIZE bytes)..."
 
-        UPLOAD_RESPONSE=$(curl -s -X POST \
-          "$API_BASE_URL/buckets/$BUCKET_ID/chunked/chunk?upload_id=$UPLOAD_ID&chunk_index=$CHUNK_INDEX" \
-          -H "Authorization: Bearer $AUTH_TOKEN" \
-          -F "chunk=@$CHUNK_FILE")
+        # Start upload in background
+        upload_chunk_async \
+            "$FILE_PATH" \
+            "$CHUNK_FILE" \
+            "$CHUNK_INDEX" \
+            "$UPLOAD_ID" \
+            "$BUCKET_ID" \
+            "$AUTH_TOKEN" \
+            "$API_BASE_URL" \
+            "$TOTAL_CHUNKS" \
+            "$PROGRESS_DIR" &
 
-        STATUS=$(echo "$UPLOAD_RESPONSE" | grep -o '"status":"[^"]*' | cut -d'"' -f4)
-
-        if [ "$STATUS" != "uploading" ]; then
-            echo "" # New line after progress bar
-            log_error "Failed to upload chunk $CHUNK_INDEX"
-            echo "$UPLOAD_RESPONSE"
-            rm -rf $TEMP_DIR
-            return 1
-        fi
-
-        BYTES_UPLOADED=$((BYTES_UPLOADED + CHUNK_FILE_SIZE))
-        rm "$CHUNK_FILE"
+        ACTIVE_JOBS=$((ACTIVE_JOBS + 1))
         CHUNK_INDEX=$((CHUNK_INDEX + 1))
 
-        sleep 0.1
+        # Small delay to avoid overwhelming the server
+        sleep 0.02
     done
 
-    echo "" # New line after progress bar
+    # Wait for all remaining jobs
+    wait
+
+    echo ""
+
+    # Check results
+    FAILED_COUNT=$(grep -l "failed" "$PROGRESS_DIR"/*.status 2>/dev/null | wc -l)
+
+    if [ "$FAILED_COUNT" -gt 0 ]; then
+        log_error "$FAILED_COUNT chunks failed to upload"
+        for error_file in "$PROGRESS_DIR"/*.error; do
+            if [ -f "$error_file" ]; then
+                echo "Error details:"
+                cat "$error_file"
+            fi
+        done
+        rm -rf "$TEMP_DIR" "$PROGRESS_DIR"
+        return 1
+    fi
+
     TOTAL_TIME=$(($(date +%s) - START_TIME))
     AVG_SPEED=$((FILE_SIZE / TOTAL_TIME))
 
     log_success "All chunks uploaded"
     log_info "Time: ${TOTAL_TIME}s | Avg speed: $(format_bytes $AVG_SPEED)/s"
-    echo ""
+
+    STEP_END_TIMING=$(end_step "$STEP_NAME" "$STEP_START_EPOCH")
+    STEP_NAMES+=("$STEP_NAME")
+    STEP_START_TIMES+=($(echo "$STEP_TIMING" | cut -d'|' -f1))
+    STEP_END_TIMES+=($(echo "$STEP_END_TIMING" | cut -d'|' -f1))
+    STEP_DURATIONS+=($(echo "$STEP_END_TIMING" | cut -d'|' -f2))
 
     # ===========================
     # Step 3: Check Progress
     # ===========================
 
-    log_info "Step 3: Verifying upload progress..."
+    STEP_NAME="STEP 3: VERIFY PROGRESS"
+    STEP_TIMING=$(start_step "$STEP_NAME")
+    STEP_START_EPOCH=$(echo "$STEP_TIMING" | cut -d'|' -f2)
 
     PROGRESS_RESPONSE=$(curl -s -X GET \
       "$API_BASE_URL/buckets/$BUCKET_ID/chunked/$UPLOAD_ID/progress" \
@@ -275,13 +396,20 @@ EOF
     else
         log_warning "Chunks verification: $UPLOADED_CHUNKS/$TOTAL_CHUNKS"
     fi
-    echo ""
+
+    STEP_END_TIMING=$(end_step "$STEP_NAME" "$STEP_START_EPOCH")
+    STEP_NAMES+=("$STEP_NAME")
+    STEP_START_TIMES+=($(echo "$STEP_TIMING" | cut -d'|' -f1))
+    STEP_END_TIMES+=($(echo "$STEP_END_TIMING" | cut -d'|' -f1))
+    STEP_DURATIONS+=($(echo "$STEP_END_TIMING" | cut -d'|' -f2))
 
     # ===========================
     # Step 4: Complete Upload
     # ===========================
 
-    log_info "Step 4: Completing upload..."
+    STEP_NAME="STEP 4: COMPLETE UPLOAD"
+    STEP_TIMING=$(start_step "$STEP_NAME")
+    STEP_START_EPOCH=$(echo "$STEP_TIMING" | cut -d'|' -f2)
 
     COMPLETE_PAYLOAD=$(cat <<EOF
 {
@@ -309,9 +437,33 @@ EOF
     log_success "Upload completed successfully!"
     log_info "Object ID: $OBJECT_ID"
     log_info "File Hash: $FILE_HASH"
+
+    STEP_END_TIMING=$(end_step "$STEP_NAME" "$STEP_START_EPOCH")
+    STEP_NAMES+=("$STEP_NAME")
+    STEP_START_TIMES+=($(echo "$STEP_TIMING" | cut -d'|' -f1))
+    STEP_END_TIMES+=($(echo "$STEP_END_TIMING" | cut -d'|' -f1))
+    STEP_DURATIONS+=($(echo "$STEP_END_TIMING" | cut -d'|' -f2))
+
+    # ===========================
+    # Display Timing Summary Table
+    # ===========================
+
+    echo ""
+    echo -e "${COLOR_CYAN}📊 Bảng tổng kết${COLOR_RESET}"
+    printf "%-36s| %-19s | %-19s | %8s\n" "STEP" "START" "END" "TIME(s)"
+    printf "%-36s+%-21s+%-21s+%10s\n" "------------------------------------" "---------------------" "---------------------" "--------"
+
+    TOTAL_DURATION=0
+    for i in "${!STEP_NAMES[@]}"; do
+        printf "%-36s| %-19s | %-19s | %8s\n" "${STEP_NAMES[$i]}" "${STEP_START_TIMES[$i]}" "${STEP_END_TIMES[$i]}" "${STEP_DURATIONS[$i]}"
+        TOTAL_DURATION=$((TOTAL_DURATION + STEP_DURATIONS[$i]))
+    done
+
+    printf "%-36s+%-21s+%-21s+%10s\n" "------------------------------------" "---------------------" "---------------------" "--------"
+    printf "%-36s| %-19s | %-19s | %8s\n" "TOTAL" "-" "-" "$TOTAL_DURATION"
     echo ""
 
-    rm -rf $TEMP_DIR
+    rm -rf "$TEMP_DIR" "$PROGRESS_DIR"
     return 0
 }
 

@@ -1,12 +1,8 @@
 package controller
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
-	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -456,7 +452,7 @@ func (ctrl *Controller) InitChunkedUpload(c *gin.Context) {
 		return
 	}
 
-	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] ✓ Initialized upload session %s for file '%s' (%d bytes, %d chunks of %d bytes each)",
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Initialized upload session %s for file '%s' (%d bytes, %d chunks of %d bytes each)",
 		uploadID, req.FileName, req.FileSize, totalChunks, chunkSize)
 
 	// Server returns the CONTRACT that client MUST follow
@@ -689,131 +685,50 @@ func (ctrl *Controller) CompleteChunkedUpload(c *gin.Context) {
 		return
 	}
 
-	sort.Slice(chunks, func(i, j int) bool {
-		return chunks[i].Key < chunks[j].Key
-	})
-
-	sourcePaths := make([]string, len(chunks))
-	for i, chunk := range chunks {
-		sourcePaths[i] = chunk.Key
+	// Update session status to processing IMMEDIATELY (fast operation)
+	if err := ctrl.Repository.UploadSessionRepo.UpdateStatus(uploadID, entity.UploadStatusProcessing); err != nil {
+		ctrl.Infra.Logger.WarningWithContextf(ctx, "[Object] Failed to update session status: %v", err)
 	}
 
-	ext := filepath.Ext(session.FileName)
-	if ext == "" {
-		ext = ".bin"
-	}
-
-	composedKey := fmt.Sprintf("%scomposed%s", session.TempPrefix, ext)
-
-	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Composing %d chunks into %s", len(chunks), composedKey)
-
-	if err := ctrl.Infra.TempMinio.ComposeObject(ctx, session.TempBucket, sourcePaths, composedKey); err != nil {
-		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to compose chunks")
-		utils.JSON500(c, "Failed to compose chunks: "+err.Error())
-		return
-	}
-
-	composedStream, composedSize, err := ctrl.Infra.TempMinio.GetObjectStream(ctx, session.TempBucket, composedKey)
-	if err != nil {
-		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to get composed object for hashing")
-		utils.JSON500(c, "Failed to verify composed file")
-		return
-	}
-
-	hasher := sha256.New()
-	if _, err := io.Copy(hasher, composedStream); err != nil {
-		composedStream.Close()
-		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to calculate file hash")
-		utils.JSON500(c, "Failed to calculate file hash")
-		return
-	}
-	composedStream.Close()
-
-	fileHash := hex.EncodeToString(hasher.Sum(nil))
-
-	finalTempPath := fmt.Sprintf("%s%s", fileHash, ext)
-	if err := ctrl.Infra.TempMinio.CopyObject(ctx, session.TempBucket, composedKey, session.TempBucket, finalTempPath); err != nil {
-		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to copy to final path")
-		utils.JSON500(c, "Failed to finalize upload")
-		return
-	}
-
-	go func() {
-		for _, chunk := range chunks {
-			_ = ctrl.Infra.TempMinio.DeleteObject(ctx, session.TempBucket, chunk.Key)
-		}
-		_ = ctrl.Infra.TempMinio.DeleteObject(ctx, session.TempBucket, composedKey)
-	}()
-
-	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] File composed with hash %s, publishing to queue", fileHash)
-
-	var targetFolder string
-	if session.CustomPath != "" {
-		targetFolder = fmt.Sprintf("%s/%s", session.CustomPath, fileHash)
-	} else {
-		targetFolder = fileHash
-	}
-
-	msg := produce.ChunkedUploadMessage{
-		UploadType:   getUploadType(ext),
-		TempBucket:   session.TempBucket,
-		TempPath:     finalTempPath,
-		TargetBucket: bucket.Name,
-		TargetFolder: targetFolder,
-		OriginalName: session.FileName,
-		FileHash:     fileHash,
-		FileSize:     composedSize,
-		ChunkSize:    0,
+	// Publish message for async processing
+	// All heavy operations (compose, hash, copy) will be done by background worker
+	msg := produce.ComposeChunksMessage{
+		UploadID:    uploadID.String(),
+		BucketID:    bucketID.String(),
+		BucketName:  bucket.Name,
+		UserID:      userID.String(),
+		TempBucket:  session.TempBucket,
+		TempPrefix:  session.TempPrefix,
+		FileName:    session.FileName,
+		FileSize:    session.FileSize,
+		ContentType: session.ContentType,
+		CustomPath:  session.CustomPath,
+		TotalChunks: session.TotalChunks,
 		Metadata: map[string]string{
-			"user_id":      userID.String(),
-			"bucket_id":    bucketID.String(),
 			"content_type": session.ContentType,
 			"custom_path":  session.CustomPath,
 		},
 	}
 
-	if err := ctrl.Infra.Produce.UploadService.PublishChunkedUpload(ctx, msg); err != nil {
-		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to publish message to queue")
-		_ = ctrl.Infra.TempMinio.DeleteObject(ctx, session.TempBucket, finalTempPath)
+	if err := ctrl.Infra.Produce.UploadService.PublishComposeChunks(ctx, msg); err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to publish compose message to queue")
+		// Revert status
+		_ = ctrl.Repository.UploadSessionRepo.UpdateStatus(uploadID, entity.UploadStatusUploading)
 		utils.JSON500(c, "Failed to queue file for processing")
 		return
 	}
 
-	if err := ctrl.Repository.UploadSessionRepo.UpdateStatus(uploadID, entity.UploadStatusProcessing); err != nil {
-		ctrl.Infra.Logger.WarningWithContextf(ctx, "[Object] Failed to update session status: %v", err)
-	}
-	if err := ctrl.Repository.UploadSessionRepo.UpdateFileHash(uploadID, fileHash); err != nil {
-		ctrl.Infra.Logger.WarningWithContextf(ctx, "[Object] Failed to update file hash: %v", err)
-	}
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Upload session %s queued for processing (%d chunks)", uploadID, len(chunks))
 
-	urlPart := fmt.Sprintf("%s%s", fileHash, ext)
-	object := &entity.Object{
-		ID:           uuid.New(),
-		BucketID:     bucketID,
-		ContentType:  session.ContentType,
-		OriginName:   session.FileName,
-		ParentPath:   session.CustomPath,
-		CreatedAt:    time.Now(),
-		LastModified: time.Now(),
-		Size:         composedSize,
-		URL:          urlPart,
-		FileHash:     fileHash,
-	}
-
-	if err := ctrl.Repository.ObjectRepo.Create(object); err != nil {
-		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to save object to database")
-		utils.JSON500(c, "Failed to save object metadata")
-		return
-	}
-
-	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Upload completed successfully: %s (hash: %s)", object.ID, fileHash)
-
+	// Return immediately - client should poll for status
 	utils.JSON202(c, gin.H{
-		"message":       "Large file accepted for processing",
-		"object":        object,
-		"status":        "processing",
-		"file_hash":     fileHash,
-		"target_folder": targetFolder,
+		"message":      "Upload accepted for processing",
+		"upload_id":    uploadID.String(),
+		"status":       "processing",
+		"total_chunks": session.TotalChunks,
+		"file_name":    session.FileName,
+		"file_size":    session.FileSize,
+		"status_url":   fmt.Sprintf("/api/v1/cloud/buckets/%s/chunked/%s/progress", bucketID, uploadID),
 	})
 }
 
