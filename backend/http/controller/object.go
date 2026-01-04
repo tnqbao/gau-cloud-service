@@ -370,11 +370,6 @@ func (ctrl *Controller) InitChunkedUpload(c *gin.Context) {
 		return
 	}
 
-	if ctrl.Infra.TempMinio == nil {
-		utils.JSON500(c, "Chunked upload is not configured")
-		return
-	}
-
 	// Server decides chunk size (production-grade architecture)
 	// 1. Start with default chunk size (5MB)
 	chunkSize := DefaultChunkSize
@@ -423,8 +418,8 @@ func (ctrl *Controller) InitChunkedUpload(c *gin.Context) {
 		contentType = "application/octet-stream"
 	}
 
-	if err := ctrl.Infra.TempMinio.EnsureBucket(ctx, tempBucket); err != nil {
-		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to ensure temp bucket")
+	if err := ctrl.Infra.Minio.EnsureBucket(ctx, tempBucket); err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to ensure pending bucket")
 		utils.JSON500(c, "Failed to prepare upload storage")
 		return
 	}
@@ -849,9 +844,8 @@ func (ctrl *Controller) AbortChunkedUpload(c *gin.Context) {
 	}
 
 	go func() {
-		if ctrl.Infra.TempMinio != nil {
-			_ = ctrl.Infra.TempMinio.DeleteObjectsWithPrefix(ctx, session.TempBucket, session.TempPrefix)
-		}
+		// Cleanup chunks from pending bucket
+		_ = ctrl.Infra.Minio.DeleteObjectsWithPrefix(ctx, session.TempBucket, session.TempPrefix)
 	}()
 
 	if err := ctrl.Repository.UploadSessionRepo.Delete(uploadID); err != nil {

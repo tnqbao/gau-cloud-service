@@ -41,13 +41,6 @@ type EnvConfig struct {
 		RootUser     string
 		RootPassword string
 	}
-	TempMinio struct {
-		Endpoint     string
-		RootUser     string
-		RootPassword string
-		Region       string
-		UseSSL       bool
-	}
 	LargeFile struct {
 		Threshold  int64  // Default 50MB (52428800 bytes)
 		TempBucket string // Bucket for temp storage
@@ -122,32 +115,6 @@ func LoadEnvConfig() *EnvConfig {
 	config.Minio.Endpoint = os.Getenv("MINIO_ENDPOINT")
 	config.Minio.RootUser = os.Getenv("MINIO_ROOT_USER")
 	config.Minio.RootPassword = os.Getenv("MINIO_ROOT_PASSWORD")
-
-	// TempMinio configuration (for large file uploads)
-	config.TempMinio.Endpoint = os.Getenv("TEMP_MINIO_ENDPOINT")
-	if config.TempMinio.Endpoint == "" {
-		config.TempMinio.Endpoint = config.Minio.Endpoint // Default to main MinIO
-	}
-	config.TempMinio.RootUser = os.Getenv("TEMP_MINIO_ROOT_USER")
-	if config.TempMinio.RootUser == "" {
-		config.TempMinio.RootUser = os.Getenv("TEMP_MINIO_ACCESS_KEY_ID")
-	}
-	if config.TempMinio.RootUser == "" {
-		config.TempMinio.RootUser = config.Minio.RootUser
-	}
-	config.TempMinio.RootPassword = os.Getenv("TEMP_MINIO_ROOT_PASSWORD")
-	if config.TempMinio.RootPassword == "" {
-		config.TempMinio.RootPassword = os.Getenv("TEMP_MINIO_SECRET_ACCESS_KEY")
-	}
-	if config.TempMinio.RootPassword == "" {
-		config.TempMinio.RootPassword = config.Minio.RootPassword
-	}
-	config.TempMinio.Region = os.Getenv("TEMP_MINIO_REGION")
-	if config.TempMinio.Region == "" {
-		config.TempMinio.Region = "us-east-1"
-	}
-	tempUseSSL := os.Getenv("TEMP_MINIO_USE_SSL")
-	config.TempMinio.UseSSL = tempUseSSL == "true" || tempUseSSL == "1"
 
 	// Large file configuration
 	if thresholdStr := os.Getenv("LARGE_FILE_THRESHOLD"); thresholdStr != "" {

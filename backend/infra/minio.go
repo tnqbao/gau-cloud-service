@@ -414,3 +414,49 @@ func (m *MinioClient) GetBucketPolicy(ctx context.Context, bucketName string) (s
 	// A more sophisticated check could parse the JSON
 	return "public", nil
 }
+
+// EnsureBucket creates a bucket if it doesn't exist
+func (m *MinioClient) EnsureBucket(ctx context.Context, bucketName string) error {
+	exists, err := m.BucketExists(ctx, bucketName)
+	if err != nil {
+		return fmt.Errorf("failed to check if bucket exists: %w", err)
+	}
+
+	if !exists {
+		if err := m.CreateBucket(ctx, bucketName, "us-east-1"); err != nil {
+			return fmt.Errorf("failed to create bucket: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// DeleteObjectsWithPrefix deletes all objects with a given prefix in a bucket
+func (m *MinioClient) DeleteObjectsWithPrefix(ctx context.Context, bucketName, prefix string) error {
+	objectCh := m.Client.ListObjects(ctx, bucketName, minio.ListObjectsOptions{
+		Prefix:    prefix,
+		Recursive: true,
+	})
+
+	objectsCh := make(chan minio.ObjectInfo)
+
+	go func() {
+		defer close(objectsCh)
+		for obj := range objectCh {
+			if obj.Err != nil {
+				continue
+			}
+			objectsCh <- obj
+		}
+	}()
+
+	errorCh := m.Client.RemoveObjects(ctx, bucketName, objectsCh, minio.RemoveObjectsOptions{})
+
+	for err := range errorCh {
+		if err.Err != nil {
+			return fmt.Errorf("failed to delete object %s: %w", err.ObjectName, err.Err)
+		}
+	}
+
+	return nil
+}
