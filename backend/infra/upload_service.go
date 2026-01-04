@@ -1,7 +1,6 @@
 package infra
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -57,41 +56,96 @@ func (p *UploadService) UploadFile(
 	bucket string,
 	path string,
 ) (*UploadResponse, error) {
+	return p.uploadFileInternal(file, filename, contentType, bucket, path, true)
+}
+
+// UploadChunkToService uploads a chunk to the upload service without hashing the filename
+// This is used for chunked uploads where we want to preserve the original chunk name
+func (p *UploadService) UploadChunkToService(
+	chunkData io.Reader,
+	filename string,
+	contentType string,
+	bucket string,
+	path string,
+) (*UploadResponse, error) {
+	return p.uploadFileInternalFromReader(chunkData, filename, contentType, bucket, path, false)
+}
+
+// uploadFileInternal handles the actual upload logic with is_hash parameter
+func (p *UploadService) uploadFileInternal(
+	file multipart.File,
+	filename string,
+	contentType string,
+	bucket string,
+	path string,
+	isHash bool,
+) (*UploadResponse, error) {
+	return p.uploadFileInternalFromReader(file, filename, contentType, bucket, path, isHash)
+}
+
+// uploadFileInternalFromReader handles the actual upload logic with io.Reader using streaming
+func (p *UploadService) uploadFileInternalFromReader(
+	fileData io.Reader,
+	filename string,
+	contentType string,
+	bucket string,
+	path string,
+	isHash bool,
+) (*UploadResponse, error) {
 
 	url := fmt.Sprintf("%s/api/v2/upload/file", p.UploadServiceURL)
 
-	var b bytes.Buffer
-	w := multipart.NewWriter(&b)
+	// Use io.Pipe for true streaming - no buffering
+	pr, pw := io.Pipe()
+	w := multipart.NewWriter(pw)
 
-	if err := w.WriteField("bucket", bucket); err != nil {
-		return nil, fmt.Errorf("failed to write bucket field: %w", err)
-	}
+	// Channel to capture errors from goroutine
+	errChan := make(chan error, 1)
 
-	if err := w.WriteField("path", path); err != nil {
-		return nil, fmt.Errorf("failed to write path field: %w", err)
-	}
+	// Write multipart form in a goroutine
+	go func() {
+		defer pw.Close()
+		defer w.Close()
 
-	h := make(map[string][]string)
-	h["Content-Disposition"] = []string{
-		fmt.Sprintf(`form-data; name="file"; filename="%s"`, filename),
-	}
-	h["Content-Type"] = []string{contentType}
+		if err := w.WriteField("bucket", bucket); err != nil {
+			errChan <- fmt.Errorf("failed to write bucket field: %w", err)
+			return
+		}
 
-	fw, err := w.CreatePart(h)
+		if err := w.WriteField("path", path); err != nil {
+			errChan <- fmt.Errorf("failed to write path field: %w", err)
+			return
+		}
+
+		if err := w.WriteField("is_hash", fmt.Sprintf("%t", isHash)); err != nil {
+			errChan <- fmt.Errorf("failed to write is_hash field: %w", err)
+			return
+		}
+
+		h := make(map[string][]string)
+		h["Content-Disposition"] = []string{
+			fmt.Sprintf(`form-data; name="file"; filename="%s"`, filename),
+		}
+		h["Content-Type"] = []string{contentType}
+
+		fw, err := w.CreatePart(h)
+		if err != nil {
+			errChan <- fmt.Errorf("failed to create form file: %w", err)
+			return
+		}
+
+		// Stream file data directly - no buffering
+		if _, err := io.Copy(fw, fileData); err != nil {
+			errChan <- fmt.Errorf("failed to stream file data: %w", err)
+			return
+		}
+
+		errChan <- nil
+	}()
+
+	req, err := http.NewRequest(http.MethodPost, url, pr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create form file: %w", err)
-	}
-
-	if _, err := io.Copy(fw, file); err != nil {
-		return nil, fmt.Errorf("failed to write file data: %w", err)
-	}
-
-	if err := w.Close(); err != nil {
-		return nil, fmt.Errorf("failed to close multipart writer: %w", err)
-	}
-
-	req, err := http.NewRequest(http.MethodPost, url, &b)
-	if err != nil {
+		pr.Close()
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
@@ -100,6 +154,16 @@ func (p *UploadService) UploadFile(
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
+
+	// Wait for write goroutine to finish and check for errors
+	writeErr := <-errChan
+	if writeErr != nil {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return nil, writeErr
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to upload file: %w", err)
 	}

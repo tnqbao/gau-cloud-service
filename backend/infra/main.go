@@ -1,8 +1,6 @@
 package infra
 
 import (
-	"log"
-
 	"github.com/tnqbao/gau-cloud-orchestrator/config"
 	"github.com/tnqbao/gau-cloud-orchestrator/infra/produce"
 )
@@ -16,7 +14,6 @@ type Infra struct {
 	UploadService        *UploadService
 	Produce              *produce.Produce
 	Minio                *MinioClient
-	TempMinio            *TempMinioClient
 }
 
 var infraInstance *Infra
@@ -66,13 +63,6 @@ func InitInfra(cfg *config.Config) *Infra {
 		panic("Failed to initialize MinIO service")
 	}
 
-	// TempMinio is optional - may use same MinIO instance or separate temp instance
-	tempMinio, err := NewTempMinioClient(cfg.EnvConfig)
-	if err != nil {
-		log.Printf("Warning: Failed to initialize TempMinio service: %v (large file uploads will not work)", err)
-		tempMinio = nil
-	}
-
 	infraInstance = &Infra{
 		Redis:                redis,
 		Postgres:             postgres,
@@ -82,7 +72,6 @@ func InitInfra(cfg *config.Config) *Infra {
 		UploadService:        uploadService,
 		Produce:              produceService,
 		Minio:                minio,
-		TempMinio:            tempMinio,
 	}
 
 	return infraInstance
