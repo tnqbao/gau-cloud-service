@@ -15,6 +15,7 @@ func SetupRouter(ctrl *controller.Controller) *gin.Engine {
 
 	apiRoutes := r.Group("/api/v1/cloud")
 	{
+		apiRoutes.Use(middlewares.CORSMiddleware(ctrl.Config.EnvConfig))
 		apiRoutes.Use(middles.AuthMiddleware)
 
 		aimRoutes := apiRoutes.Group("/iam")
