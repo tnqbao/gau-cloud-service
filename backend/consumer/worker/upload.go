@@ -2,13 +2,9 @@ package worker
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"path/filepath"
-	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,15 +30,18 @@ func NewUploadConsumer(channel *amqp.Channel, infra *infra.Infra, repo *reposito
 }
 
 func (c *UploadConsumer) Start(ctx context.Context) error {
-	if err := c.startComposeChunksConsumer(ctx); err != nil {
-		return fmt.Errorf("failed to start compose chunks consumer: %w", err)
+	if err := c.startComposeCompletedConsumer(ctx); err != nil {
+		return fmt.Errorf("failed to start upload consumer: %w", err)
 	}
 	return nil
 }
 
-func (c *UploadConsumer) startComposeChunksConsumer(ctx context.Context) error {
+// startComposeCompletedConsumer listens for compose_completed messages from upload-service
+// After upload-service composes chunks and moves to final destination, it sends this message
+// This consumer updates the database with the final object record
+func (c *UploadConsumer) startComposeCompletedConsumer(ctx context.Context) error {
 	msgs, err := c.channel.Consume(
-		produce.ComposeChunksQueue,
+		produce.ComposeCompletedQueue,
 		"",
 		false, // manual ack
 		false,
@@ -51,23 +50,23 @@ func (c *UploadConsumer) startComposeChunksConsumer(ctx context.Context) error {
 		nil,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to register compose chunks consumer: %w", err)
+		return fmt.Errorf("failed to register compose_completed consumer: %w", err)
 	}
 
-	c.infra.Logger.InfoWithContextf(ctx, "[Upload Consumer] Started listening for compose chunks jobs on queue: %s", produce.ComposeChunksQueue)
+	c.infra.Logger.InfoWithContextf(ctx, "[Upload Consumer] Started listening for compose_completed on queue: %s", produce.ComposeCompletedQueue)
 
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
-				c.infra.Logger.InfoWithContextf(ctx, "[Upload Consumer - Compose Chunks] Shutting down...")
+				c.infra.Logger.InfoWithContextf(ctx, "[Upload Consumer] Shutting down...")
 				return
 			case msg, ok := <-msgs:
 				if !ok {
-					c.infra.Logger.WarningWithContextf(ctx, "[Upload Consumer - Compose Chunks] Channel closed")
+					c.infra.Logger.WarningWithContextf(ctx, "[Upload Consumer] Channel closed")
 					return
 				}
-				c.handleComposeChunks(ctx, msg)
+				c.handleComposeCompleted(ctx, msg)
 			}
 		}
 	}()
@@ -75,141 +74,59 @@ func (c *UploadConsumer) startComposeChunksConsumer(ctx context.Context) error {
 	return nil
 }
 
-func (c *UploadConsumer) handleComposeChunks(ctx context.Context, msg amqp.Delivery) {
-	c.infra.Logger.InfoWithContextf(ctx, "[Upload Consumer - Compose Chunks] Received message")
+// handleComposeCompleted processes compose_completed messages from upload-service
+// 1. Parse the message with file hash and final path
+// 2. Create object record in database
+// 3. Update upload session status to completed
+func (c *UploadConsumer) handleComposeCompleted(ctx context.Context, msg amqp.Delivery) {
+	c.infra.Logger.InfoWithContextf(ctx, "[Upload Consumer] Received compose_completed message")
 
-	var payload produce.ComposeChunksMessage
+	var payload produce.ComposeCompletedMessage
 	if err := json.Unmarshal(msg.Body, &payload); err != nil {
-		c.infra.Logger.ErrorWithContextf(ctx, err, "[Upload Consumer - Compose Chunks] Failed to unmarshal message")
+		c.infra.Logger.ErrorWithContextf(ctx, err, "[Upload Consumer] Failed to unmarshal compose_completed message")
 		_ = msg.Nack(false, false)
 		return
 	}
 
 	uploadID, err := uuid.Parse(payload.UploadID)
 	if err != nil {
-		c.infra.Logger.ErrorWithContextf(ctx, err, "[Upload Consumer - Compose Chunks] Invalid upload ID")
+		c.infra.Logger.ErrorWithContextf(ctx, err, "[Upload Consumer] Invalid upload ID")
 		_ = msg.Nack(false, false)
 		return
 	}
 
 	bucketID, err := uuid.Parse(payload.BucketID)
 	if err != nil {
-		c.infra.Logger.ErrorWithContextf(ctx, err, "[Upload Consumer - Compose Chunks] Invalid bucket ID")
+		c.infra.Logger.ErrorWithContextf(ctx, err, "[Upload Consumer] Invalid bucket ID")
 		_ = msg.Nack(false, false)
 		return
 	}
 
-	userID, err := uuid.Parse(payload.UserID)
-	if err != nil {
-		c.infra.Logger.ErrorWithContextf(ctx, err, "[Upload Consumer - Compose Chunks] Invalid user ID")
-		_ = msg.Nack(false, false)
-		return
-	}
+	c.infra.Logger.InfoWithContextf(ctx, "[Upload Consumer] Processing compose_completed for upload %s, success=%v", uploadID, payload.Success)
 
-	c.infra.Logger.InfoWithContextf(ctx, "[Upload Consumer - Compose Chunks] Processing upload %s for user %s", uploadID, userID)
-
-	// Use a background context since this is a long-running operation
-	// The HTTP request context is already canceled at this point
-	bgCtx := context.Background()
-
-	// 1. List all chunks
-	chunks, err := c.infra.TempMinio.ListObjectsWithPrefix(bgCtx, payload.TempBucket, payload.TempPrefix)
-	if err != nil {
-		c.infra.Logger.ErrorWithContextf(ctx, err, "[Upload Consumer - Compose Chunks] Failed to list chunks")
+	// Check if compose was successful
+	if !payload.Success {
+		c.infra.Logger.ErrorWithContextf(ctx, nil, "[Upload Consumer] Compose failed: %s", payload.Error)
 		c.updateSessionStatus(uploadID, entity.UploadStatusFailed)
-		_ = msg.Nack(false, true) // Requeue
+		_ = msg.Ack(false)
 		return
 	}
 
-	if len(chunks) != payload.TotalChunks {
-		c.infra.Logger.ErrorWithContextf(ctx, nil, "[Upload Consumer - Compose Chunks] Missing chunks: expected %d, found %d", payload.TotalChunks, len(chunks))
-		c.updateSessionStatus(uploadID, entity.UploadStatusFailed)
-		_ = msg.Nack(false, false)
-		return
+	// Update session with file hash
+	if err := c.repository.UploadSessionRepo.UpdateFileHash(uploadID, payload.FileHash); err != nil {
+		c.infra.Logger.WarningWithContextf(ctx, "[Upload Consumer] Failed to update file hash: %v", err)
 	}
 
-	// 2. Sort chunks by key (chunk_00000, chunk_00001, ...)
-	sort.Slice(chunks, func(i, j int) bool {
-		return chunks[i].Key < chunks[j].Key
-	})
-
-	sourcePaths := make([]string, len(chunks))
-	for i, chunk := range chunks {
-		sourcePaths[i] = chunk.Key
-	}
-
-	// 3. Compose chunks into single file
+	// Get file extension from original filename
 	ext := filepath.Ext(payload.FileName)
 	if ext == "" {
 		ext = ".bin"
 	}
 
-	composedKey := fmt.Sprintf("%scomposed%s", payload.TempPrefix, ext)
+	// Construct URL part (hash + extension)
+	urlPart := fmt.Sprintf("%s%s", payload.FileHash, ext)
 
-	c.infra.Logger.InfoWithContextf(ctx, "[Upload Consumer - Compose Chunks] Composing %d chunks into %s", len(chunks), composedKey)
-
-	if err := c.infra.TempMinio.ComposeObject(bgCtx, payload.TempBucket, sourcePaths, composedKey); err != nil {
-		c.infra.Logger.ErrorWithContextf(ctx, err, "[Upload Consumer - Compose Chunks] Failed to compose chunks")
-		c.updateSessionStatus(uploadID, entity.UploadStatusFailed)
-		_ = msg.Nack(false, true) // Requeue for retry
-		return
-	}
-
-	// 4. Calculate SHA256 hash
-	composedStream, composedSize, err := c.infra.TempMinio.GetObjectStream(bgCtx, payload.TempBucket, composedKey)
-	if err != nil {
-		c.infra.Logger.ErrorWithContextf(ctx, err, "[Upload Consumer - Compose Chunks] Failed to get composed object for hashing")
-		c.updateSessionStatus(uploadID, entity.UploadStatusFailed)
-		_ = msg.Nack(false, true)
-		return
-	}
-
-	hasher := sha256.New()
-	if _, err := io.Copy(hasher, composedStream); err != nil {
-		composedStream.Close()
-		c.infra.Logger.ErrorWithContextf(ctx, err, "[Upload Consumer - Compose Chunks] Failed to calculate file hash")
-		c.updateSessionStatus(uploadID, entity.UploadStatusFailed)
-		_ = msg.Nack(false, true)
-		return
-	}
-	composedStream.Close()
-
-	fileHash := hex.EncodeToString(hasher.Sum(nil))
-
-	// 5. Copy to final path with hash as name
-	finalTempPath := fmt.Sprintf("%s%s", fileHash, ext)
-	if err := c.infra.TempMinio.CopyObject(bgCtx, payload.TempBucket, composedKey, payload.TempBucket, finalTempPath); err != nil {
-		c.infra.Logger.ErrorWithContextf(ctx, err, "[Upload Consumer - Compose Chunks] Failed to copy to final path")
-		c.updateSessionStatus(uploadID, entity.UploadStatusFailed)
-		_ = msg.Nack(false, true)
-		return
-	}
-
-	// 6. Cleanup chunks and composed file (async)
-	go func() {
-		cleanupCtx := context.Background()
-		for _, chunk := range chunks {
-			_ = c.infra.TempMinio.DeleteObject(cleanupCtx, payload.TempBucket, chunk.Key)
-		}
-		_ = c.infra.TempMinio.DeleteObject(cleanupCtx, payload.TempBucket, composedKey)
-	}()
-
-	c.infra.Logger.InfoWithContextf(ctx, "[Upload Consumer - Compose Chunks] File composed with hash %s", fileHash)
-
-	// 7. Update session with file hash
-	if err := c.repository.UploadSessionRepo.UpdateFileHash(uploadID, fileHash); err != nil {
-		c.infra.Logger.WarningWithContextf(ctx, "[Upload Consumer - Compose Chunks] Failed to update file hash: %v", err)
-	}
-
-	// 8. Create object record in database
-	var targetFolder string
-	if payload.CustomPath != "" {
-		targetFolder = fmt.Sprintf("%s/%s", payload.CustomPath, fileHash)
-	} else {
-		targetFolder = fileHash
-	}
-
-	urlPart := fmt.Sprintf("%s%s", fileHash, ext)
+	// Create object record in database
 	object := &entity.Object{
 		ID:           uuid.New(),
 		BucketID:     bucketID,
@@ -218,47 +135,23 @@ func (c *UploadConsumer) handleComposeChunks(ctx context.Context, msg amqp.Deliv
 		ParentPath:   payload.CustomPath,
 		CreatedAt:    time.Now(),
 		LastModified: time.Now(),
-		Size:         composedSize,
+		Size:         payload.FileSize,
 		URL:          urlPart,
-		FileHash:     fileHash,
+		FileHash:     payload.FileHash,
 	}
 
 	if err := c.repository.ObjectRepo.Create(object); err != nil {
-		c.infra.Logger.ErrorWithContextf(ctx, err, "[Upload Consumer - Compose Chunks] Failed to save object to database")
+		c.infra.Logger.ErrorWithContextf(ctx, err, "[Upload Consumer] Failed to save object to database")
 		c.updateSessionStatus(uploadID, entity.UploadStatusFailed)
 		_ = msg.Nack(false, true)
 		return
 	}
 
-	// 9. Publish ChunkedUploadMessage for further processing (move to final storage, etc.)
-	uploadMsg := produce.ChunkedUploadMessage{
-		UploadType:   getUploadType(ext),
-		TempBucket:   payload.TempBucket,
-		TempPath:     finalTempPath,
-		TargetBucket: payload.BucketName,
-		TargetFolder: targetFolder,
-		OriginalName: payload.FileName,
-		FileHash:     fileHash,
-		FileSize:     composedSize,
-		ChunkSize:    0,
-		Metadata: map[string]string{
-			"user_id":      payload.UserID,
-			"bucket_id":    payload.BucketID,
-			"content_type": payload.ContentType,
-			"custom_path":  payload.CustomPath,
-		},
-	}
-
-	if err := c.infra.Produce.UploadService.PublishChunkedUpload(bgCtx, uploadMsg); err != nil {
-		c.infra.Logger.ErrorWithContextf(ctx, err, "[Upload Consumer - Compose Chunks] Failed to publish chunked upload message")
-		// Don't fail the job - object is already created
-		c.infra.Logger.WarningWithContextf(ctx, "[Upload Consumer - Compose Chunks] Object created but failed to queue for final processing")
-	}
-
-	// 10. Mark upload as completed
+	// Mark upload as completed
 	c.updateSessionStatus(uploadID, entity.UploadStatusCompleted)
 
-	c.infra.Logger.InfoWithContextf(ctx, "[Upload Consumer - Compose Chunks] Successfully completed upload %s, object %s created", uploadID, object.ID)
+	c.infra.Logger.InfoWithContextf(ctx, "[Upload Consumer] Successfully completed upload %s, object %s created (hash: %s)",
+		uploadID, object.ID, payload.FileHash)
 
 	// Acknowledge the message
 	_ = msg.Ack(false)
@@ -267,23 +160,5 @@ func (c *UploadConsumer) handleComposeChunks(ctx context.Context, msg amqp.Deliv
 func (c *UploadConsumer) updateSessionStatus(uploadID uuid.UUID, status entity.UploadStatus) {
 	if err := c.repository.UploadSessionRepo.UpdateStatus(uploadID, status); err != nil {
 		c.infra.Logger.WarningWithContextf(context.Background(), "[Upload Consumer] Failed to update session status: %v", err)
-	}
-}
-
-// getUploadType determines the upload type based on file extension
-func getUploadType(ext string) string {
-	switch ext {
-	case ".zip", ".tar", ".gz", ".rar", ".7z":
-		return "archive"
-	case ".mp4", ".avi", ".mkv", ".mov", ".wmv":
-		return "video"
-	case ".mp3", ".wav", ".flac", ".aac":
-		return "audio"
-	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg":
-		return "image"
-	case ".exe", ".msi", ".dmg", ".deb", ".rpm":
-		return "executable"
-	default:
-		return "file"
 	}
 }

@@ -370,11 +370,6 @@ func (ctrl *Controller) InitChunkedUpload(c *gin.Context) {
 		return
 	}
 
-	if ctrl.Infra.TempMinio == nil {
-		utils.JSON500(c, "Chunked upload is not configured")
-		return
-	}
-
 	// Server decides chunk size (production-grade architecture)
 	// 1. Start with default chunk size (5MB)
 	chunkSize := DefaultChunkSize
@@ -423,8 +418,8 @@ func (ctrl *Controller) InitChunkedUpload(c *gin.Context) {
 		contentType = "application/octet-stream"
 	}
 
-	if err := ctrl.Infra.TempMinio.EnsureBucket(ctx, tempBucket); err != nil {
-		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to ensure temp bucket")
+	if err := ctrl.Infra.Minio.EnsureBucket(ctx, tempBucket); err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to ensure pending bucket")
 		utils.JSON500(c, "Failed to prepare upload storage")
 		return
 	}
@@ -545,8 +540,9 @@ func (ctrl *Controller) UploadChunk(c *gin.Context) {
 		return
 	}
 
-	if ctrl.Infra.TempMinio == nil {
-		utils.JSON500(c, "Chunked upload is not configured")
+	// Check if UploadService is configured
+	if ctrl.Infra.UploadService == nil {
+		utils.JSON500(c, "Upload service is not configured")
 		return
 	}
 
@@ -572,18 +568,31 @@ func (ctrl *Controller) UploadChunk(c *gin.Context) {
 		return
 	}
 
-	// Use zero-padded chunk index to ensure correct sorting (e.g., chunk_00, chunk_01, ..., chunk_10)
-	chunkKey := fmt.Sprintf("%schunk_%05d.part", session.TempPrefix, chunkIndex)
+	// Use zero-padded chunk index to ensure correct sorting (e.g., chunk_00000, chunk_00001, ...)
+	chunkFileName := fmt.Sprintf("chunk_%05d.part", chunkIndex)
 
-	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Uploading chunk %d/%d for session %s (size: %d)",
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Uploading chunk %d/%d for session %s via upload-service (size: %d)",
 		chunkIndex+1, session.TotalChunks, uploadID, chunkSize)
 
-	err = ctrl.Infra.TempMinio.PutObjectStream(ctx, session.TempBucket, chunkKey, chunkReader, chunkSize, "application/octet-stream", nil)
+	// Upload chunk to upload-service with:
+	// - bucket: "pending"
+	// - path: "{upload_id}"
+	// - is_hash: false (to preserve original chunk filename)
+	uploadResp, err := ctrl.Infra.UploadService.UploadChunkToService(
+		chunkReader,
+		chunkFileName,
+		"application/octet-stream",
+		"pending",
+		uploadID.String(),
+	)
 	if err != nil {
-		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to upload chunk %d", chunkIndex)
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to upload chunk %d via upload-service", chunkIndex)
 		utils.JSON500(c, "Failed to upload chunk")
 		return
 	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Upload-service response: bucket=%s, path=%s, hash=%s",
+		uploadResp.Bucket, uploadResp.FilePath, uploadResp.FileHash)
 
 	if err := ctrl.Repository.UploadSessionRepo.IncrementUploadedChunks(uploadID); err != nil {
 		ctrl.Infra.Logger.WarningWithContextf(ctx, "[Object] Failed to update upload progress: %v", err)
@@ -595,7 +604,7 @@ func (ctrl *Controller) UploadChunk(c *gin.Context) {
 		uploadedChunks = updatedSession.UploadedChunks
 	}
 
-	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Chunk %d uploaded successfully (%d/%d)",
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Chunk %d uploaded successfully via upload-service (%d/%d)",
 		chunkIndex, uploadedChunks, session.TotalChunks)
 
 	utils.JSON200(c, gin.H{
@@ -603,6 +612,7 @@ func (ctrl *Controller) UploadChunk(c *gin.Context) {
 		"uploaded_chunks": uploadedChunks,
 		"total_chunks":    session.TotalChunks,
 		"status":          string(entity.UploadStatusUploading),
+		"file_path":       uploadResp.FilePath,
 	})
 }
 
@@ -668,20 +678,9 @@ func (ctrl *Controller) CompleteChunkedUpload(c *gin.Context) {
 		return
 	}
 
-	if ctrl.Infra.TempMinio == nil {
-		utils.JSON500(c, "Chunked upload is not configured")
-		return
-	}
-
-	chunks, err := ctrl.Infra.TempMinio.ListObjectsWithPrefix(ctx, session.TempBucket, session.TempPrefix)
-	if err != nil {
-		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to list chunks")
-		utils.JSON500(c, "Failed to verify uploaded chunks")
-		return
-	}
-
-	if len(chunks) != session.TotalChunks {
-		utils.JSON400(c, fmt.Sprintf("Missing chunks: expected %d, found %d", session.TotalChunks, len(chunks)))
+	// Verify all chunks have been uploaded by checking session uploaded count
+	if session.UploadedChunks != session.TotalChunks {
+		utils.JSON400(c, fmt.Sprintf("Missing chunks: expected %d, uploaded %d", session.TotalChunks, session.UploadedChunks))
 		return
 	}
 
@@ -690,35 +689,37 @@ func (ctrl *Controller) CompleteChunkedUpload(c *gin.Context) {
 		ctrl.Infra.Logger.WarningWithContextf(ctx, "[Object] Failed to update session status: %v", err)
 	}
 
-	// Publish message for async processing
-	// All heavy operations (compose, hash, copy) will be done by background worker
-	msg := produce.ComposeChunksMessage{
-		UploadID:    uploadID.String(),
-		BucketID:    bucketID.String(),
-		BucketName:  bucket.Name,
-		UserID:      userID.String(),
-		TempBucket:  session.TempBucket,
-		TempPrefix:  session.TempPrefix,
-		FileName:    session.FileName,
-		FileSize:    session.FileSize,
-		ContentType: session.ContentType,
-		CustomPath:  session.CustomPath,
-		TotalChunks: session.TotalChunks,
+	// Publish message for async processing by upload-service
+	// Upload-service will compose chunks and move to final destination
+	msg := produce.ChunkCompleteMessage{
+		UploadID:     uploadID.String(),
+		BucketID:     bucketID.String(),
+		BucketName:   bucket.Name,
+		UserID:       userID.String(),
+		TempBucket:   "pending",                             // Chunks are in "pending" bucket
+		TempPrefix:   fmt.Sprintf("%s/", uploadID.String()), // Path is upload_id/
+		FileName:     session.FileName,
+		FileSize:     session.FileSize,
+		ContentType:  session.ContentType,
+		CustomPath:   session.CustomPath,
+		TotalChunks:  session.TotalChunks,
+		TargetBucket: bucket.Name,        // Final destination bucket
+		TargetPath:   session.CustomPath, // Final destination path
 		Metadata: map[string]string{
 			"content_type": session.ContentType,
 			"custom_path":  session.CustomPath,
 		},
 	}
 
-	if err := ctrl.Infra.Produce.UploadService.PublishComposeChunks(ctx, msg); err != nil {
-		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to publish compose message to queue")
+	if err := ctrl.Infra.Produce.UploadService.PublishChunkComplete(ctx, msg); err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to publish chunk_complete message to queue")
 		// Revert status
 		_ = ctrl.Repository.UploadSessionRepo.UpdateStatus(uploadID, entity.UploadStatusUploading)
 		utils.JSON500(c, "Failed to queue file for processing")
 		return
 	}
 
-	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Upload session %s queued for processing (%d chunks)", uploadID, len(chunks))
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Upload session %s queued for processing (%d chunks)", uploadID, session.TotalChunks)
 
 	// Return immediately - client should poll for status
 	utils.JSON202(c, gin.H{
@@ -843,9 +844,8 @@ func (ctrl *Controller) AbortChunkedUpload(c *gin.Context) {
 	}
 
 	go func() {
-		if ctrl.Infra.TempMinio != nil {
-			_ = ctrl.Infra.TempMinio.DeleteObjectsWithPrefix(ctx, session.TempBucket, session.TempPrefix)
-		}
+		// Cleanup chunks from pending bucket
+		_ = ctrl.Infra.Minio.DeleteObjectsWithPrefix(ctx, session.TempBucket, session.TempPrefix)
 	}()
 
 	if err := ctrl.Repository.UploadSessionRepo.Delete(uploadID); err != nil {
