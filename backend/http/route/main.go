@@ -12,6 +12,7 @@ func SetupRouter(ctrl *controller.Controller) *gin.Engine {
 	if err != nil {
 		panic(err)
 	}
+	r.Use(middlewares.CORSMiddleware(ctrl.Config.EnvConfig))
 
 	apiRoutes := r.Group("/api/v1/cloud")
 	{
