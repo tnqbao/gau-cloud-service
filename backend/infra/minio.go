@@ -460,3 +460,46 @@ func (m *MinioClient) DeleteObjectsWithPrefix(ctx context.Context, bucketName, p
 
 	return nil
 }
+
+// GetObject retrieves an object from MinIO as a stream for direct download
+// Returns the object reader, object info, and any error
+func (m *MinioClient) GetObject(ctx context.Context, bucketName, objectPath string) (*minio.Object, *minio.ObjectInfo, error) {
+	if bucketName == "" {
+		return nil, nil, fmt.Errorf("bucketName cannot be empty")
+	}
+	if objectPath == "" {
+		return nil, nil, fmt.Errorf("objectPath cannot be empty")
+	}
+
+	obj, err := m.Client.GetObject(ctx, bucketName, objectPath, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get object: %w", err)
+	}
+
+	// Get object info for content-type, size, etc.
+	info, err := obj.Stat()
+	if err != nil {
+		obj.Close()
+		return nil, nil, fmt.Errorf("failed to get object info: %w", err)
+	}
+
+	return obj, &info, nil
+}
+
+// DeleteObject deletes a single object from MinIO
+func (m *MinioClient) DeleteObject(ctx context.Context, bucketName, objectPath string) error {
+	if bucketName == "" {
+		return fmt.Errorf("bucketName cannot be empty")
+	}
+	if objectPath == "" {
+		return fmt.Errorf("objectPath cannot be empty")
+	}
+
+	err := m.Client.RemoveObject(ctx, bucketName, objectPath, minio.RemoveObjectOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to delete object: %w", err)
+	}
+
+	return nil
+}
+

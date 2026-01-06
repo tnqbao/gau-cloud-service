@@ -127,3 +127,53 @@ func (r *ObjectRepository) FindByBucketIDAndHash(bucketID uuid.UUID, fileHash st
 	}
 	return objects, nil
 }
+
+// DeleteByBucketIDAndPath deletes all objects with the exact parent_path
+// Returns the deleted objects for tracking what needs to be cleaned up in storage
+func (r *ObjectRepository) DeleteByBucketIDAndPath(bucketID uuid.UUID, path string) ([]entity.Object, error) {
+	var objects []entity.Object
+	// First, find all objects to return them
+	err := r.db.Where("bucket_id = ? AND parent_path = ?", bucketID, path).Find(&objects).Error
+	if err != nil {
+		return nil, err
+	}
+
+	// Then delete them
+	err = r.db.Delete(&entity.Object{}, "bucket_id = ? AND parent_path = ?", bucketID, path).Error
+	if err != nil {
+		return nil, err
+	}
+
+	return objects, nil
+}
+
+// DeleteByBucketIDAndPathPrefix deletes all objects where parent_path starts with the given prefix
+// This is used for deleting entire folder hierarchies
+// Returns the deleted objects for tracking what needs to be cleaned up in storage
+func (r *ObjectRepository) DeleteByBucketIDAndPathPrefix(bucketID uuid.UUID, pathPrefix string) ([]entity.Object, error) {
+	var objects []entity.Object
+
+	if pathPrefix == "" {
+		// Empty prefix means delete all objects at root level and in subfolders
+		err := r.db.Where("bucket_id = ?", bucketID).Find(&objects).Error
+		if err != nil {
+			return nil, err
+		}
+		err = r.db.Delete(&entity.Object{}, "bucket_id = ?", bucketID).Error
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Find all objects where parent_path equals prefix OR starts with prefix/
+		err := r.db.Where("bucket_id = ? AND (parent_path = ? OR parent_path LIKE ?)", bucketID, pathPrefix, pathPrefix+"/%").Find(&objects).Error
+		if err != nil {
+			return nil, err
+		}
+		err = r.db.Delete(&entity.Object{}, "bucket_id = ? AND (parent_path = ? OR parent_path LIKE ?)", bucketID, pathPrefix, pathPrefix+"/%").Error
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return objects, nil
+}

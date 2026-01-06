@@ -298,6 +298,9 @@ func (ctrl *Controller) DeleteObject(c *gin.Context) {
 
 	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Deleting object '%s' from bucket '%s'", objectID, bucket.Name)
 
+	// Store object URL for message before deletion
+	objectURL := object.URL
+
 	// Delete object from database
 	err = ctrl.Repository.ObjectRepo.Delete(objectID)
 	if err != nil {
@@ -306,10 +309,222 @@ func (ctrl *Controller) DeleteObject(c *gin.Context) {
 		return
 	}
 
+	// Publish message to consumer to delete object from MinIO storage
+	deleteMsg := produce.DeleteObjectMessage{
+		BucketName: bucket.Name,
+		ObjectPath: objectURL, // URL field contains the hash.ext format path in MinIO
+		UserID:     userIDStr,
+	}
+	if err := ctrl.Infra.Produce.UploadService.PublishDeleteObject(ctx, deleteMsg); err != nil {
+		// Log the error but don't fail the request - DB record is already deleted
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to publish delete message for object %s: %v", objectID, err)
+	} else {
+		ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Published delete message for object %s in bucket %s", objectID, bucket.Name)
+	}
+
 	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Successfully deleted object: %s", objectID)
 	utils.JSON200(c, gin.H{
 		"message":   "Object deleted successfully",
 		"object_id": objectID,
+	})
+}
+
+// DownloadObject streams an object directly to the client without buffering in memory
+// GET /buckets/:id/objects/:object_id/download
+func (ctrl *Controller) DownloadObject(c *gin.Context) {
+	ctx := c.Request.Context()
+	userIDStr := c.GetString("user_id")
+	if userIDStr == "" {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, nil, "[Object] user_id not found in context")
+		utils.JSON401(c, "Unauthorized: user_id not found")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Invalid user_id format: %v", err)
+		utils.JSON400(c, "Invalid user_id format")
+		return
+	}
+
+	// Get bucket_id from path parameter
+	bucketIDStr := c.Param("id")
+	if bucketIDStr == "" {
+		ctrl.Infra.Logger.WarningWithContextf(ctx, "[Object] bucket_id not provided in path")
+		utils.JSON400(c, "bucket_id is required")
+		return
+	}
+
+	bucketID, err := uuid.Parse(bucketIDStr)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Invalid bucket_id format: %v", err)
+		utils.JSON400(c, "Invalid bucket_id format")
+		return
+	}
+
+	// Get object_id from path parameter
+	objectIDStr := c.Param("object_id")
+	if objectIDStr == "" {
+		ctrl.Infra.Logger.WarningWithContextf(ctx, "[Object] object_id not provided in path")
+		utils.JSON400(c, "object_id is required")
+		return
+	}
+
+	objectID, err := uuid.Parse(objectIDStr)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Invalid object_id format: %v", err)
+		utils.JSON400(c, "Invalid object_id format")
+		return
+	}
+
+	// Check if bucket exists and user has permission
+	bucket, err := ctrl.Repository.BucketRepo.FindByID(bucketID)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Bucket not found: %v", err)
+		utils.JSON404(c, "Bucket not found")
+		return
+	}
+
+	// Check if the user owns this bucket
+	if bucket.OwnerID != userID {
+		ctrl.Infra.Logger.WarningWithContextf(ctx, "[Object] User %s attempted to download object from bucket %s owned by %s", userID, bucketID, bucket.OwnerID)
+		utils.JSON403(c, "Forbidden: you don't have permission to access this bucket")
+		return
+	}
+
+	// Get the object to verify it exists and belongs to this bucket
+	object, err := ctrl.Repository.ObjectRepo.FindByID(objectID)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Object not found: %v", err)
+		utils.JSON404(c, "Object not found")
+		return
+	}
+
+	// Verify object belongs to the specified bucket
+	if object.BucketID != bucketID {
+		ctrl.Infra.Logger.WarningWithContextf(ctx, "[Object] Object %s does not belong to bucket %s", objectID, bucketID)
+		utils.JSON404(c, "Object not found in this bucket")
+		return
+	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Streaming download for object '%s' from bucket '%s'", objectID, bucket.Name)
+
+	// Get object stream from MinIO
+	minioObject, objectInfo, err := ctrl.Infra.Minio.GetObject(ctx, bucket.Name, object.URL)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to get object from MinIO: %v", err)
+		utils.JSON500(c, "Failed to retrieve object")
+		return
+	}
+	defer minioObject.Close()
+
+	// Set response headers for download
+	contentType := object.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	c.Header("Content-Type", contentType)
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", object.OriginName))
+	c.Header("Content-Length", fmt.Sprintf("%d", objectInfo.Size))
+
+	// Stream directly to client without buffering in RAM
+	c.Status(200)
+	_, err = io.Copy(c.Writer, minioObject)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to stream object to client: %v", err)
+		// Can't send error response since we've already started writing
+		return
+	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Successfully streamed object '%s' (%d bytes)", objectID, objectInfo.Size)
+}
+
+// DeleteObjectsByPath deletes all objects in a path and sends message to consumer
+// DELETE /buckets/:id/objects/path/*path
+func (ctrl *Controller) DeleteObjectsByPath(c *gin.Context) {
+	ctx := c.Request.Context()
+	userIDStr := c.GetString("user_id")
+	if userIDStr == "" {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, nil, "[Object] user_id not found in context")
+		utils.JSON401(c, "Unauthorized: user_id not found")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Invalid user_id format: %v", err)
+		utils.JSON400(c, "Invalid user_id format")
+		return
+	}
+
+	// Get bucket_id from path parameter
+	bucketIDStr := c.Param("id")
+	if bucketIDStr == "" {
+		ctrl.Infra.Logger.WarningWithContextf(ctx, "[Object] bucket_id not provided in path")
+		utils.JSON400(c, "bucket_id is required")
+		return
+	}
+
+	bucketID, err := uuid.Parse(bucketIDStr)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Invalid bucket_id format: %v", err)
+		utils.JSON400(c, "Invalid bucket_id format")
+		return
+	}
+
+	// Get path from wildcard parameter and normalize it
+	deletePath := c.Param("path")
+	// Remove leading slash from wildcard path
+	deletePath = strings.TrimPrefix(deletePath, "/")
+	// Remove trailing slash
+	deletePath = strings.TrimSuffix(deletePath, "/")
+	// Clean the path
+	deletePath = strings.TrimSpace(deletePath)
+
+	// Check if bucket exists and user has permission
+	bucket, err := ctrl.Repository.BucketRepo.FindByID(bucketID)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Bucket not found: %v", err)
+		utils.JSON404(c, "Bucket not found")
+		return
+	}
+
+	// Check if the user owns this bucket
+	if bucket.OwnerID != userID {
+		ctrl.Infra.Logger.WarningWithContextf(ctx, "[Object] User %s attempted to delete path in bucket %s owned by %s", userID, bucketID, bucket.OwnerID)
+		utils.JSON403(c, "Forbidden: you don't have permission to delete objects in this bucket")
+		return
+	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Deleting all objects at path '%s' in bucket '%s'", deletePath, bucket.Name)
+
+	// Delete all objects with this path prefix from database and get hashes for cleanup
+	deletedObjects, err := ctrl.Repository.ObjectRepo.DeleteByBucketIDAndPathPrefix(bucketID, deletePath)
+	if err != nil {
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to delete objects from database: %v", err)
+		utils.JSON500(c, "Failed to delete objects")
+		return
+	}
+
+	// Publish message to consumer to delete path from MinIO storage
+	deleteMsg := produce.DeletePathMessage{
+		BucketName: bucket.Name,
+		Path:       deletePath,
+		UserID:     userIDStr,
+	}
+	if err := ctrl.Infra.Produce.UploadService.PublishDeletePath(ctx, deleteMsg); err != nil {
+		// Log the error but don't fail the request - DB records are already deleted
+		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to publish delete path message: %v", err)
+	} else {
+		ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Published delete path message for path '%s' in bucket '%s'", deletePath, bucket.Name)
+	}
+
+	ctrl.Infra.Logger.InfoWithContextf(ctx, "[Object] Successfully deleted %d objects at path '%s'", len(deletedObjects), deletePath)
+	utils.JSON200(c, gin.H{
+		"message":       "Objects deleted successfully",
+		"path":          deletePath,
+		"deleted_count": len(deletedObjects),
 	})
 }
 

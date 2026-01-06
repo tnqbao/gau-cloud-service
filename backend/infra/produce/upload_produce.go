@@ -20,6 +20,14 @@ const (
 	// ComposeCompletedQueue is received from upload-service after compose is done
 	ComposeCompletedQueue      = "upload.compose_completed"
 	ComposeCompletedRoutingKey = "upload.compose_completed"
+
+	// ObjectDeleteQueue is for deleting single objects from storage
+	ObjectDeleteQueue      = "object.delete"
+	ObjectDeleteRoutingKey = "object.delete"
+
+	// PathDeleteQueue is for deleting all objects in a path/folder from storage
+	PathDeleteQueue      = "object.delete_path"
+	PathDeleteRoutingKey = "object.delete_path"
 )
 
 // ChunkedUploadMessage represents the message structure for chunked uploads
@@ -71,6 +79,22 @@ type ComposeCompletedMessage struct {
 	Success     bool   `json:"success"`      // Whether compose was successful
 	Error       string `json:"error"`        // Error message if failed
 	Timestamp   int64  `json:"timestamp"`
+}
+
+// DeleteObjectMessage is sent to consumer to delete a single object from storage
+type DeleteObjectMessage struct {
+	BucketName string `json:"bucket_name"` // MinIO bucket name
+	ObjectPath string `json:"object_path"` // Object path in bucket (hash.ext format from URL field)
+	UserID     string `json:"user_id"`     // User who triggered the delete
+	Timestamp  int64  `json:"timestamp"`
+}
+
+// DeletePathMessage is sent to consumer to delete all objects in a path/folder from storage
+type DeletePathMessage struct {
+	BucketName string `json:"bucket_name"` // MinIO bucket name
+	Path       string `json:"path"`        // Folder path to delete (prefix)
+	UserID     string `json:"user_id"`     // User who triggered the delete
+	Timestamp  int64  `json:"timestamp"`
 }
 
 // UploadProduceService handles publishing messages for upload processing
@@ -173,6 +197,56 @@ func InitUploadProduceService(channel *amqp.Channel) *UploadProduceService {
 		panic("Failed to bind ComposeCompleted queue: " + err.Error())
 	}
 
+	// Declare ObjectDelete queue
+	_, err = channel.QueueDeclare(
+		ObjectDeleteQueue,
+		true,  // durable
+		false, // auto-delete
+		false, // exclusive
+		false, // no-wait
+		nil,
+	)
+	if err != nil {
+		panic("Failed to declare ObjectDelete queue: " + err.Error())
+	}
+
+	// Bind ObjectDelete queue to exchange
+	err = channel.QueueBind(
+		ObjectDeleteQueue,
+		ObjectDeleteRoutingKey,
+		ChunkedUploadExchange,
+		false,
+		nil,
+	)
+	if err != nil {
+		panic("Failed to bind ObjectDelete queue: " + err.Error())
+	}
+
+	// Declare PathDelete queue
+	_, err = channel.QueueDeclare(
+		PathDeleteQueue,
+		true,  // durable
+		false, // auto-delete
+		false, // exclusive
+		false, // no-wait
+		nil,
+	)
+	if err != nil {
+		panic("Failed to declare PathDelete queue: " + err.Error())
+	}
+
+	// Bind PathDelete queue to exchange
+	err = channel.QueueBind(
+		PathDeleteQueue,
+		PathDeleteRoutingKey,
+		ChunkedUploadExchange,
+		false,
+		nil,
+	)
+	if err != nil {
+		panic("Failed to bind PathDelete queue: " + err.Error())
+	}
+
 	return service
 }
 
@@ -213,6 +287,52 @@ func (s *UploadProduceService) PublishChunkComplete(ctx context.Context, msg Chu
 		ctx,
 		ChunkedUploadExchange,
 		ChunkCompleteRoutingKey,
+		false,
+		false,
+		amqp.Publishing{
+			ContentType:  "application/json",
+			Body:         body,
+			DeliveryMode: amqp.Persistent,
+		},
+	)
+}
+
+// PublishDeleteObject publishes a message to delete a single object from storage
+func (s *UploadProduceService) PublishDeleteObject(ctx context.Context, msg DeleteObjectMessage) error {
+	msg.Timestamp = time.Now().Unix()
+
+	body, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+	return s.channel.PublishWithContext(
+		ctx,
+		ChunkedUploadExchange,
+		ObjectDeleteRoutingKey,
+		false,
+		false,
+		amqp.Publishing{
+			ContentType:  "application/json",
+			Body:         body,
+			DeliveryMode: amqp.Persistent,
+		},
+	)
+}
+
+// PublishDeletePath publishes a message to delete all objects in a path from storage
+func (s *UploadProduceService) PublishDeletePath(ctx context.Context, msg DeletePathMessage) error {
+	msg.Timestamp = time.Now().Unix()
+
+	body, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+	return s.channel.PublishWithContext(
+		ctx,
+		ChunkedUploadExchange,
+		PathDeleteRoutingKey,
 		false,
 		false,
 		amqp.Publishing{
