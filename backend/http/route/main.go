@@ -39,7 +39,7 @@ func SetupRouter(ctrl *controller.Controller) *gin.Engine {
 			bucketRoutes.POST("/:id/objects", ctrl.UploadObject)
 			bucketRoutes.GET("/:id/objects/*path", ctrl.ListObjectsByPath)
 			bucketRoutes.DELETE("/:id/objects/:object_id", ctrl.DeleteObject)
-			bucketRoutes.GET("/:id/objects/:object_id/download", ctrl.DownloadObject)
+			bucketRoutes.GET("/:id/download/:object_id", ctrl.DownloadObject)
 			bucketRoutes.DELETE("/:id/objects/path/*path", ctrl.DeleteObjectsByPath)
 
 			// Chunked upload routes (separate from /objects to avoid wildcard conflict)
