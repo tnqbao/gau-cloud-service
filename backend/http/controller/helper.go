@@ -123,13 +123,14 @@ func (ctrl *Controller) handleSmallFileUpload(c *gin.Context, fileHeader *multip
 	}
 	defer file.Close()
 
-	// Forward to upload service
+	// Forward to upload service with is_hash=false to preserve original filename
 	uploadResponse, err := ctrl.Infra.UploadService.UploadFile(
 		file,
 		fileHeader.Filename,
 		contentType,
 		bucket.Name,
 		customPath,
+		false, // is_hash: false to keep original filename
 	)
 	if err != nil {
 		ctrl.Infra.Logger.ErrorWithContextf(ctx, err, "[Object] Failed to upload file to upload service: %v", err)
@@ -137,7 +138,7 @@ func (ctrl *Controller) handleSmallFileUpload(c *gin.Context, fileHeader *multip
 		return
 	}
 
-	// Extract URL from upload response (hash.ext format)
+	// Extract URL from upload response (original filename preserved)
 	urlPart := filepath.Base(uploadResponse.FilePath)
 
 	// Create object entity with info from upload response
