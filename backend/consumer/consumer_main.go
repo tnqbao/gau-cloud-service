@@ -49,6 +49,13 @@ func main() {
 		log.Fatalf("Failed to start Upload consumer: %v", err)
 	}
 
+	// Start Object Consumer (for async object/path deletion)
+	objectConsumer := worker.NewObjectConsumer(infra.RabbitMQ.Channel, infra, repo)
+	if err := objectConsumer.Start(ctx); err != nil {
+		infra.Logger.ErrorWithContextf(ctx, err, "Failed to start Object consumer: %v", err)
+		log.Fatalf("Failed to start Object consumer: %v", err)
+	}
+
 	// Wait for interrupt signal to gracefully shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

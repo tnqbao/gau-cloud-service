@@ -55,8 +55,9 @@ func (p *UploadService) UploadFile(
 	contentType string,
 	bucket string,
 	path string,
+	isHash bool,
 ) (*UploadResponse, error) {
-	return p.uploadFileInternal(file, filename, contentType, bucket, path, true)
+	return p.uploadFileInternal(file, filename, contentType, bucket, path, isHash)
 }
 
 // UploadChunkToService uploads a chunk to the upload service without hashing the filename
