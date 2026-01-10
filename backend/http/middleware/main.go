@@ -6,16 +6,23 @@ import (
 )
 
 type Middlewares struct {
-	CORSMiddleware gin.HandlerFunc
-	AuthMiddleware gin.HandlerFunc
+	CORSMiddleware       gin.HandlerFunc
+	AuthMiddleware       gin.HandlerFunc
+	UploadAuthMiddleware gin.HandlerFunc
 }
 
 func NewMiddlewares(ctrl *controller.Controller) (*Middlewares, error) {
 	cors := CORSMiddleware(ctrl.Config.EnvConfig)
 	auth := AuthMiddleware(ctrl.Infra.AuthorizationService, ctrl.Config.EnvConfig)
+	uploadAuth := UploadAuthMiddleware(
+		ctrl.Infra.AuthorizationService,
+		ctrl.Repository.IAMUserRepo,
+		ctrl.Config.EnvConfig,
+	)
 
 	return &Middlewares{
-		CORSMiddleware: cors,
-		AuthMiddleware: auth,
+		CORSMiddleware:       cors,
+		AuthMiddleware:       auth,
+		UploadAuthMiddleware: uploadAuth,
 	}, nil
 }

@@ -35,8 +35,7 @@ func SetupRouter(ctrl *controller.Controller) *gin.Engine {
 			bucketRoutes.PUT("/:id/access", ctrl.UpdateBucketAccess)
 			bucketRoutes.GET("/:id/access", ctrl.GetBucketAccess)
 
-			// Object routes (nested under bucket)
-			bucketRoutes.POST("/:id/objects", ctrl.UploadObject)
+			// Object routes (nested under bucket) - JWT only
 			bucketRoutes.GET("/:id/objects/*path", ctrl.ListObjectsByPath)
 			bucketRoutes.DELETE("/:id/objects/:object_id", ctrl.DeleteObject)
 			bucketRoutes.GET("/:id/download/:object_id", ctrl.DownloadObject)
@@ -52,5 +51,13 @@ func SetupRouter(ctrl *controller.Controller) *gin.Engine {
 		}
 
 	}
+
+	// Upload routes with dual auth (JWT or HMAC)
+	uploadRoutes := r.Group("/api/v1/cloud/buckets")
+	{
+		uploadRoutes.Use(middles.UploadAuthMiddleware)
+		uploadRoutes.POST("/:id/objects", ctrl.UploadObject)
+	}
+
 	return r
 }
