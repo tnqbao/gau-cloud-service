@@ -3,4 +3,4 @@ vscode
 aws
 .env
 
-backend/http/config
+http/config

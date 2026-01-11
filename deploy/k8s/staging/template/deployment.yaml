@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gau-cloud-http-deployment
+  namespace: bao-${DEPLOY_ENV}-env
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gau-cloud-http-service
+  template:
+    metadata:
+      labels:
+        app: gau-cloud-http-service
+    spec:
+      containers:
+        - name: gau-cloud-http-service
+          image: iamqbao/gau_cloud_service:latest
+          imagePullPolicy: Always
+          command: ["./entrypoint.sh"]
+          args: ["http"]
+          envFrom:
+            - configMapRef:
+                name: gau-cloud-${DEPLOY_ENV}-config
+            - secretRef:
+                name: gau-cloud-${DEPLOY_ENV}-secret
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "128Mi"
+            limits:
+              cpu: "750m"
+              memory: "256Mi"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gau-cloud-consumer-deployment
+  namespace: bao-${DEPLOY_ENV}-env
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gau-cloud-consumer-service
+  template:
+    metadata:
+      labels:
+        app: gau-cloud-consumer-service
+    spec:
+      containers:
+        - name: gau-cloud-consumer-service
+          image: iamqbao/gau_cloud_service:latest
+          imagePullPolicy: Always
+          command: ["./entrypoint.sh"]
+          args: ["consumer"]
+          envFrom:
+            - configMapRef:
+                name: gau-cloud-${DEPLOY_ENV}-config
+            - secretRef:
+                name: gau-cloud-${DEPLOY_ENV}-secret
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "128Mi"
+            limits:
+              cpu: "750m"
+              memory: "256Mi"
